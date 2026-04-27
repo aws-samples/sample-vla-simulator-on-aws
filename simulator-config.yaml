@@ -1,0 +1,9 @@
+# vla-simulator — Shared Deployment Configuration
+# Usage: python deploy.py --vla gr00t
+#        python deploy.py --vla pi
+
+deployment:
+  region: us-east-1                    # Target AWS region (us-east-1 / us-west-2 / ap-northeast-2 / ap-northeast-1 / eu-central-1)
+  notify_email: YOUR_EMAIL@example.com  # Email for SNS completion notification (confirm subscription on first deploy)
+  s3_results_prefix: vla-sim-results   # S3 bucket name prefix (suffix: stackname-region-accountid)
+  auto_terminate: true                  # Auto-terminate EC2 after simulation (stack remains, run destroy.py to clean up)

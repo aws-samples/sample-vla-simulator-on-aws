@@ -1,0 +1,35 @@
+syntax = "proto3";
+
+package pi;
+
+// π0.5 (Physical Intelligence) 원격 추론 서비스
+// 2026-04-17: vla-pi-realtime Phase 2
+// Reference: openpi pi05_droid config (DROID manipulation)
+service PIInference {
+  // 로봇 관절 액션 추론
+  rpc Infer (InferRequest) returns (InferResponse);
+  // 서버 / 모델 로드 상태 확인
+  rpc Health (HealthRequest) returns (HealthResponse);
+}
+
+message InferRequest {
+  bytes  exterior_image = 1;  // exterior 카메라 — JPEG/PNG raw bytes, 224×224 RGB
+  bytes  wrist_image    = 2;  // wrist 카메라 — JPEG/PNG raw bytes, 224×224 RGB
+  string instruction    = 3;  // 자연어 태스크 지시 (예: "pick up the cube")
+
+  // 로봇 상태 8-dim: 관절 7개 + 그리퍼 1개 (optional — 미입력 시 zero 패딩)
+  repeated float state  = 4;
+}
+
+message InferResponse {
+  // actions: shape=(chunk_length=15, action_dim=8), dtype=float32, row-major
+  // 복원: np.frombuffer(response.actions, dtype=np.float32).reshape(-1, 8)
+  bytes actions = 1;
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  bool healthy      = 1;  // 서버 구동 중
+  bool model_loaded = 2;  // π0.5 모델 로드 완료 여부
+}
