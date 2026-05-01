@@ -1,16 +1,24 @@
 # VLA Simulator — 1-Click VLA Simulation on AWS
 
-Run Vision-Language-Action (VLA) robot simulation workloads on AWS GPU instances with a single command. Supports NVIDIA GR00T N1.7 and π0.5 (openpi).
+Run Vision-Language-Action (VLA) robot simulation workloads on AWS GPU instances with a single command. Supports NVIDIA GR00T N1.7, GR00T N1.6 (GR1 humanoid), and π0.5 (openpi).
 
 ## Overview
 
 | Feature | Detail |
 |---------|--------|
-| **Models** | GR00T N1.7-LIBERO, π0.5 (pi05_libero) |
-| **Simulation** | LIBERO (robosuite + MuJoCo, headless EGL) |
+| **Models** | GR00T N1.7-LIBERO, GR00T N1.6-3B (GR1), π0.5 (pi05_libero) |
+| **Simulation** | LIBERO / RoboCasa (robosuite + MuJoCo, headless EGL) |
 | **Deploy** | AWS CDK + EC2 GPU (g6/g5, us-east-1) |
 | **Results** | S3 (MP4 video + summary) + SNS email |
 | **Cleanup** | Auto-terminate EC2; run `destroy.py` for stack teardown |
+
+### Supported VLA Combinations
+
+| `--vla` | Model | Sim Environment | Robot | Stack |
+|---------|-------|----------------|-------|-------|
+| `gr00t` | GR00T N1.7-LIBERO | LIBERO-10 kitchen tasks | Franka Panda (7-DOF) | `GR00T-Demo` |
+| `gr00t-gr1` | GR00T N1.6-3B | RoboCasa GR1 tabletop tasks | Fourier GR1 humanoid (22-DOF) | `GR00T-GR1-Demo` |
+| `pi` | π0.5 (pi05_libero) | LIBERO spatial/object | Franka Panda (7-DOF) | `Pi-Demo` |
 
 ### Architecture
 
@@ -72,6 +80,9 @@ deployment:
 # GR00T N1.7 — LIBERO kitchen tasks (~120 min)
 python deploy.py --vla gr00t --email you@example.com
 
+# GR00T N1.6 + GR1 humanoid — RoboCasa tabletop tasks (~90 min)
+python deploy.py --vla gr00t-gr1 --email you@example.com
+
 # π0.5 — LIBERO spatial + object tasks (~4 hrs)
 python deploy.py --vla pi --email you@example.com
 ```
@@ -81,8 +92,11 @@ On first deploy you will receive an SNS subscription confirmation email — **cl
 ### 3. Monitor (optional)
 
 ```bash
-# GR00T logs
+# GR00T N1.7 logs
 aws logs tail /gr00t/userdata --follow --region us-east-1
+
+# GR00T N1.6 + GR1 logs
+aws logs tail /gr00t-gr1/userdata --follow --region us-east-1
 
 # π0.5 logs
 aws logs tail /pi/userdata --follow --region us-east-1
@@ -111,6 +125,7 @@ Each `task-N/` folder contains:
 
 ```bash
 python destroy.py --vla gr00t
+python destroy.py --vla gr00t-gr1
 python destroy.py --vla pi
 ```
 
@@ -120,15 +135,18 @@ The S3 results bucket is **retained** after stack deletion to preserve simulatio
 
 ## Expected Results
 
-| Model | Task Suite | Expected Success Rate |
-|-------|-----------|----------------------|
-| GR00T N1.7-LIBERO | KITCHEN_SCENE3 (stove + moka pot) | ~90–100% |
-| GR00T N1.7-LIBERO | KITCHEN_SCENE4 (black bowl in drawer) | ~90–100% |
-| π0.5 | libero_object | ~80–94% |
-| π0.5 | libero_spatial | ~85–95% |
+| `--vla` | Task | Expected Success Rate | Source |
+|---------|------|-----------------------|--------|
+| `gr00t` | KITCHEN_SCENE3 (stove + moka pot) | ~90–100% | validated 2026-04-27 |
+| `gr00t` | KITCHEN_SCENE4 (black bowl in drawer) | ~90–100% | validated 2026-04-27 |
+| `gr00t-gr1` | PosttrainPnPNovelFromPlateToBowlSplitA (GR1) | ~80% | validated 2026-04-12 |
+| `gr00t-gr1` | PnPCanToDrawerClose (GR1) | 0% (pre-trained N1.6 not supported) | validated 2026-04-12 |
+| `pi` | libero_object | ~80–94% | validated 2026-04-27 |
+| `pi` | libero_spatial | ~85–95% | validated 2026-04-27 |
 
-**Validated results (2026-04-27, us-east-1, g6.12xlarge / g5.xlarge):**
-- GR00T: KITCHEN_SCENE3 = 1.0 (5/5), KITCHEN_SCENE4 = 1.0 (3/3)
+**Validated results (us-east-1, g6.12xlarge / g5.xlarge):**
+- GR00T N1.7: KITCHEN_SCENE3 = 1.0 (5/5), KITCHEN_SCENE4 = 1.0 (3/3)
+- GR00T N1.6 + GR1: PosttrainPnP = 0.8 (4/5), PnPCanToDrawer = 0.0 (pre-trained model limitation)
 - π0.5: libero_object = 0.94 (47/50)
 
 ---

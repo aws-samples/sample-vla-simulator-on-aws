@@ -46,8 +46,9 @@ const DLAMI_MAPPING: Record<string, string> = {
 };
 
 const INSTANCE_TYPES: Record<string, string[]> = {
-  gr00t: ['g6.12xlarge', 'g5.12xlarge', 'g6.xlarge', 'g5.xlarge'],
-  pi:    ['g5.xlarge',   'g5.2xlarge',  'g6.xlarge', 'g6.2xlarge'],
+  gr00t:     ['g6.12xlarge', 'g5.12xlarge', 'g6.xlarge', 'g5.xlarge'],
+  'gr00t-gr1': ['g6.12xlarge', 'g5.12xlarge', 'g6.xlarge', 'g5.xlarge'],
+  pi:        ['g5.xlarge',   'g5.2xlarge',  'g6.xlarge', 'g6.2xlarge'],
 };
 
 export class VlaSimulatorStack extends cdk.Stack {
@@ -77,7 +78,8 @@ export class VlaSimulatorStack extends cdk.Stack {
     // π0.5 bridge additionally needs nlb_endpoint
     const nlbEndpoint: string =
       (this.node.tryGetContext('nlb_endpoint') as string | undefined) ?? '';
-    const bridgeMode = !!(vpcIdCtx && (vla === 'gr00t' || nlbEndpoint));
+    const isGr00tVla = vla === 'gr00t' || vla === 'gr00t-gr1';
+    const bridgeMode = !!(vpcIdCtx && (isGr00tVla || nlbEndpoint));
 
     // EBS size: bridge mode may use smaller disk (π0.5 skips checkpoint download)
     const ebsGb: number = bridgeMode
@@ -253,6 +255,7 @@ export class VlaSimulatorStack extends cdk.Stack {
       bootstrapSubVars['BridgeMode'] = bridgeMode ? 'true' : 'false';
       bootstrapSubVars['NlbEndpoint'] = nlbEndpoint;
     }
+    // gr00t-gr1 uses the same bootstrap as gr00t (no extra variables needed)
 
     baseBootstrapLines.push(
       `aws s3 cp ${userDataAsset.s3ObjectUrl} /tmp/${vla}.sh`,

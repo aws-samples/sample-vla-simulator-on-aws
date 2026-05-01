@@ -8,8 +8,9 @@ generate.py — model yaml + simulator-config.yaml 읽어 assets/userdata/{vla}.
   4. assets/userdata/{vla}.sh 저장
 
 사용법:
-    python generate.py --vla gr00t [--config simulator-config.yaml] [--dry-run]
-    python generate.py --vla pi    [--resolved-vpc vpc-xxx --resolved-nlb host:port]
+    python generate.py --vla gr00t     [--config simulator-config.yaml] [--dry-run]
+    python generate.py --vla gr00t-gr1 [--config simulator-config.yaml] [--dry-run]
+    python generate.py --vla pi        [--resolved-vpc vpc-xxx --resolved-nlb host:port]
 """
 
 import argparse
@@ -38,22 +39,24 @@ def _load_merged_config(simulator_config_path: Path, vla: str) -> dict:
     return {**sim_cfg, **model_cfg, "deployment": merged_deployment}
 
 
-def generate_gr00t(config: dict, resolved_grpc: str, resolved_vpc: str, dry_run: bool) -> str:
+def _build_gr00t_ctx(config: dict, resolved_grpc: str, model_id: str) -> dict:
+    """gr00t / gr00t-gr1 공통 context 빌드."""
     tasks = config.get("tasks", [])
     if not tasks:
-        print("[error] models/gr00t.yaml에 tasks 항목이 없습니다.", file=sys.stderr)
+        print(f"[error] models/{model_id}.yaml에 tasks 항목이 없습니다.", file=sys.stderr)
         sys.exit(1)
 
     tasks_json = json.dumps(tasks, ensure_ascii=False)
     deployment = config.get("deployment", {})
     model = config.get("model", {})
+    default_hf_repo = "nvidia/GR00T-N1.7-3B" if model_id == "gr00t" else "nvidia/GR00T-N1.6-3B"
 
     ctx = {
         "tasks_json": tasks_json,
         "deployment": deployment,
         "isaac_groot_commit": model.get("isaac_groot_commit", ""),
         "uv_version": model.get("uv_version", ""),
-        "hf_repo": model.get("hf_repo", "nvidia/GR00T-N1.7-3B"),
+        "hf_repo": model.get("hf_repo", default_hf_repo),
         "hf_subfolder": model.get("hf_subfolder", ""),
         "hf_model_revision": model.get("hf_model_revision", ""),
         "remote_grpc_endpoint": resolved_grpc,
@@ -76,8 +79,19 @@ def generate_gr00t(config: dict, resolved_grpc: str, resolved_vpc: str, dry_run:
             (bridge_dir / "gr00t_pb2_grpc.py").read_bytes()
         ).decode()
 
+    return ctx
+
+
+def generate_gr00t(config: dict, resolved_grpc: str, resolved_vpc: str, dry_run: bool) -> str:
+    ctx = _build_gr00t_ctx(config, resolved_grpc, "gr00t")
     env = Environment(loader=FileSystemLoader(str(TEMPLATES_DIR)), keep_trailing_newline=True)  # nosec B701 - shell script template, autoescape not applicable
     return env.get_template("gr00t-userdata.sh.j2").render(**ctx)
+
+
+def generate_gr00t_gr1(config: dict, resolved_grpc: str, resolved_vpc: str, dry_run: bool) -> str:
+    ctx = _build_gr00t_ctx(config, resolved_grpc, "gr00t-gr1")
+    env = Environment(loader=FileSystemLoader(str(TEMPLATES_DIR)), keep_trailing_newline=True)  # nosec B701 - shell script template, autoescape not applicable
+    return env.get_template("gr00t-gr1-userdata.sh.j2").render(**ctx)
 
 
 def generate_pi(config: dict, resolved_vpc: str, resolved_nlb: str, dry_run: bool) -> str:
@@ -108,7 +122,7 @@ def generate_pi(config: dict, resolved_vpc: str, resolved_nlb: str, dry_run: boo
 
 def main():
     parser = argparse.ArgumentParser(description="vla-simulator UserData 스크립트 생성")
-    parser.add_argument("--vla", required=True, choices=["gr00t", "pi"], help="VLA 모델")
+    parser.add_argument("--vla", required=True, choices=["gr00t", "gr00t-gr1", "pi"], help="VLA 모델")
     parser.add_argument(
         "--config", default=str(BASE_DIR / "simulator-config.yaml"),
         help="공통 설정 파일 경로 (기본: simulator-config.yaml)",
@@ -134,6 +148,8 @@ def main():
 
     if args.vla == "gr00t":
         rendered = generate_gr00t(config, args.resolved_grpc, args.resolved_vpc, args.dry_run)
+    elif args.vla == "gr00t-gr1":
+        rendered = generate_gr00t_gr1(config, args.resolved_grpc, args.resolved_vpc, args.dry_run)
     else:
         rendered = generate_pi(config, args.resolved_vpc, args.resolved_nlb, args.dry_run)
 

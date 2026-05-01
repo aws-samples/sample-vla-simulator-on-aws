@@ -2,9 +2,11 @@
 """
 vla-simulator 1-Click Deploy
 Usage:
-  python deploy.py --vla gr00t              # GR00T local mode
+  python deploy.py --vla gr00t              # GR00T N1.7 + LIBERO local mode
+  python deploy.py --vla gr00t-gr1          # GR00T N1.6 + GR1 humanoid + RoboCasa local mode
   python deploy.py --vla pi                 # π0.5  local mode
   python deploy.py --vla gr00t --bridge     # GR00T bridge mode (vla-hub ECS)
+  python deploy.py --vla gr00t-gr1 --bridge # GR00T-GR1 bridge mode (vla-hub ECS, if N1.6 supported)
   python deploy.py --vla pi    --bridge     # π0.5  bridge mode (vla-hub ECS)
 
 Steps:
@@ -147,7 +149,7 @@ def _maybe_import_orphan_bucket(
 
 def main():
     parser = argparse.ArgumentParser(description="vla-simulator 1-Click Deploy")
-    parser.add_argument("--vla", required=True, choices=["gr00t", "pi"],
+    parser.add_argument("--vla", required=True, choices=["gr00t", "gr00t-gr1", "pi"],
                         help="VLA model to deploy")
     parser.add_argument("--bridge", action="store_true",
                         help="Bridge mode: use vla-hub ECS endpoint instead of local model")
@@ -180,12 +182,12 @@ def main():
     generate_extra: list[str] = []
 
     if args.bridge:
-        if args.vla == "gr00t":
+        if args.vla in ("gr00t", "gr00t-gr1"):
             raw_grpc = str(bridge_cfg.get("remote_grpc_endpoint", "")).strip()
             raw_vpc = str(bridge_cfg.get("vpc_id", "")).strip()
             if not raw_grpc or not raw_vpc:
-                print("[error] Bridge mode requires bridge.remote_grpc_endpoint and bridge.vpc_id "
-                      "in models/gr00t.yaml", file=sys.stderr)
+                print(f"[error] Bridge mode requires bridge.remote_grpc_endpoint and bridge.vpc_id "
+                      f"in models/{args.vla}.yaml", file=sys.stderr)
                 sys.exit(1)
             resolved_grpc = _resolve_ssm(raw_grpc, region)
             resolved_vpc = _resolve_ssm(raw_vpc, region)
@@ -207,7 +209,12 @@ def main():
             extra_cdk_ctx = ["-c", f"vpc_id={safe_vpc}", "-c", f"nlb_endpoint={shlex.quote(resolved_nlb)}"]
             generate_extra = ["--resolved-vpc", resolved_vpc, "--resolved-nlb", resolved_nlb]
 
-    stack_name = "GR00T-Demo" if args.vla == "gr00t" else "Pi-Demo"
+    if args.vla == "gr00t":
+        stack_name = "GR00T-Demo"
+    elif args.vla == "gr00t-gr1":
+        stack_name = "GR00T-GR1-Demo"
+    else:
+        stack_name = "Pi-Demo"
     mode = "bridge" if args.bridge else "local"
     s3_results_prefix = deployment.get("s3_results_prefix", "vla-sim-results")
     cdk_dir = str(BASE_DIR / "cdk")
@@ -250,13 +257,15 @@ def main():
     # 2. CDK deploy
     print("[2/2] Starting CDK deploy...")
     if mode == "bridge":
-        if args.vla == "gr00t":
-            print("  Estimated time: ~60 min (install ~30min + bridge eval ~30min)")
+        if args.vla in ("gr00t", "gr00t-gr1"):
+            print("  Estimated time: ~60 min (install ~20-30min + bridge eval ~30min)")
         else:
             print("  Estimated time: ~30-40 min (install ~10min + bridge eval ~20-30min)")
     else:
         if args.vla == "gr00t":
             print("  Estimated time: ~120 min (install ~30min + model download ~10min + sim ~80min)")
+        elif args.vla == "gr00t-gr1":
+            print("  Estimated time: ~90 min (install ~20min + model download ~5min + sim ~60min)")
         else:
             print("  Estimated time: ~90-120 min per suite (install ~30min + eval ~60-90min)")
     print("  If this is your first deploy, confirm the SNS subscription email to receive notifications.")
@@ -276,7 +285,8 @@ def main():
     print()
     print("[deploy] Done! Simulation is running in the background.")
     print(f"  A completion notification will be sent to: {email}")
-    print(f"  To clean up: python destroy.py --vla {args.vla}")
+    vla_safe = shlex.quote(args.vla)
+    print(f"  To clean up: python destroy.py --vla {vla_safe}")
 
 
 if __name__ == "__main__":
