@@ -151,12 +151,13 @@ The S3 results bucket is **retained** after stack deletion to preserve simulatio
 | `gr00t-gr1` | PnPCanToDrawerClose (GR1) | 0% (pre-trained N1.6 not supported) | validated 2026-04-12 |
 | `pi` | libero_object | ~80–94% | validated 2026-04-27 |
 | `pi` | libero_spatial | ~85–95% | validated 2026-04-27 |
-| `openvla-oft` | libero_10 (long-horizon) | ~94.5% (paper) | **pending validation** |
+| `openvla-oft` | libero_10 (long-horizon) | ~94.5% (paper) | validated 2026-05-04 |
 
-**Validated results (us-east-1, g6.12xlarge / g5.xlarge):**
+**Validated results (us-east-1, g6.12xlarge / g5.xlarge / g6.xlarge):**
 - GR00T N1.7: KITCHEN_SCENE3 = 1.0 (5/5), KITCHEN_SCENE4 = 1.0 (3/3)
 - GR00T N1.6 + GR1: PosttrainPnP = 0.8 (4/5), PnPCanToDrawer = 0.0 (pre-trained model limitation)
 - π0.5: libero_object = 0.94 (47/50)
+- OpenVLA-OFT: libero_10 = 1.0 (10/10 at 1 trial/task, g6.xlarge)
 
 ---
 
