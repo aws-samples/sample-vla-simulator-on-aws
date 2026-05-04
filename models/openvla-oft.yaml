@@ -1,0 +1,41 @@
+# OpenVLA-OFT (Optimized Fine-Tuning) model configuration
+# Paper: "Fine-Tuning Vision-Language-Action Models: Optimizing Speed and Success"
+#        arXiv:2502.19645 (Kim et al., 2025)
+# Repo:  https://github.com/moojink/openvla-oft (MIT)
+# Goal:  LIBERO-10 (long-horizon) evaluation with 1-click deploy on AWS
+
+model:
+  id: openvla-oft
+  version: "OFT-LIBERO-10"
+  hf_repo: "moojink/openvla-7b-oft-finetuned-libero-10"
+  # huggingface.co/api/models/moojink/openvla-7b-oft-finetuned-libero-10 → sha
+  hf_model_revision: "95220f9a3421a7ff12d4218e73d09ade830fa9a3"   # Validated: 2026-05-04
+  # git ls-remote https://github.com/moojink/openvla-oft.git HEAD
+  oft_commit: "e4287e94541f459edc4feabc4e181f537cd569a8"          # Validated: 2026-05-04 (2025-09-09)
+  # git ls-remote https://github.com/moojink/transformers-openvla-oft.git HEAD
+  transformers_fork_commit: "bc339d9ad707454c0c115970db43c260067c61ab"  # Validated: 2026-05-04
+  # LIBERO upstream — pinned commit (repo rarely updated; master)
+  libero_commit: "master"
+  # Evaluation flags (align with paper defaults)
+  task_suite_name: "libero_10"
+  center_crop: true
+
+instance:
+  preferred: [g6.xlarge, g5.xlarge, g6.2xlarge, g5.2xlarge]  # ~16GB VRAM sufficient; L4/A10G both OK
+  ebs_gb: 250                     # 7B checkpoint ~15GB + flash-attn build + conda env + videos
+  ebs_gb_bridge: 250              # bridge not yet supported — same value
+  creationpolicy_timeout: PT240M  # conda+pip ~25min + flash-attn build ~10min + LIBERO-10 eval ~3h (10 tasks × 5 trials)
+
+# Evaluation tasks — structure differs from gr00t (env_name) / pi (suite+num_episodes)
+# here we model suite-level eval because openvla-oft's run_libero_eval.py iterates all tasks in a suite.
+tasks:
+  - suite: libero_10
+    num_trials_per_task: 5          # PoC: 5/task × 10 tasks = 50 trials (~90-180min on L4)
+    description: "LIBERO-10 long-horizon (10 tasks × 5 trials)"
+    # Full paper: num_trials_per_task=50 (500 trials total) takes >10h on single GPU.
+    # Expected success rate @ paper: ~94.5% (LIBERO-10 / LIBERO-Long with OFT recipe)
+
+# Bridge mode not supported in initial version.
+# OpenVLA-OFT client/server split would require a vla-hub Docker image — deferred.
+bridge:
+  enabled: false

@@ -5,6 +5,7 @@ Usage:
   python deploy.py --vla gr00t              # GR00T N1.7 + LIBERO local mode
   python deploy.py --vla gr00t-gr1          # GR00T N1.6 + GR1 humanoid + RoboCasa local mode
   python deploy.py --vla pi                 # π0.5  local mode
+  python deploy.py --vla openvla-oft        # OpenVLA-OFT + LIBERO-10 local mode
   python deploy.py --vla gr00t --bridge     # GR00T bridge mode (vla-hub ECS)
   python deploy.py --vla gr00t-gr1 --bridge # GR00T-GR1 bridge mode (vla-hub ECS, if N1.6 supported)
   python deploy.py --vla pi    --bridge     # π0.5  bridge mode (vla-hub ECS)
@@ -149,7 +150,7 @@ def _maybe_import_orphan_bucket(
 
 def main():
     parser = argparse.ArgumentParser(description="vla-simulator 1-Click Deploy")
-    parser.add_argument("--vla", required=True, choices=["gr00t", "gr00t-gr1", "pi"],
+    parser.add_argument("--vla", required=True, choices=["gr00t", "gr00t-gr1", "pi", "openvla-oft"],
                         help="VLA model to deploy")
     parser.add_argument("--bridge", action="store_true",
                         help="Bridge mode: use vla-hub ECS endpoint instead of local model")
@@ -182,6 +183,9 @@ def main():
     generate_extra: list[str] = []
 
     if args.bridge:
+        if args.vla == "openvla-oft":
+            print("[error] Bridge mode not supported for openvla-oft (local only).", file=sys.stderr)
+            sys.exit(1)
         if args.vla in ("gr00t", "gr00t-gr1"):
             raw_grpc = str(bridge_cfg.get("remote_grpc_endpoint", "")).strip()
             raw_vpc = str(bridge_cfg.get("vpc_id", "")).strip()
@@ -213,6 +217,8 @@ def main():
         stack_name = "GR00T-Demo"
     elif args.vla == "gr00t-gr1":
         stack_name = "GR00T-GR1-Demo"
+    elif args.vla == "openvla-oft":
+        stack_name = "OpenVLA-OFT-Demo"
     else:
         stack_name = "Pi-Demo"
     mode = "bridge" if args.bridge else "local"
@@ -266,6 +272,8 @@ def main():
             print("  Estimated time: ~120 min (install ~30min + model download ~10min + sim ~80min)")
         elif args.vla == "gr00t-gr1":
             print("  Estimated time: ~90 min (install ~20min + model download ~5min + sim ~60min)")
+        elif args.vla == "openvla-oft":
+            print("  Estimated time: ~180 min (conda/pip ~30min + HF download ~10min + LIBERO-10 eval ~120min)")
         else:
             print("  Estimated time: ~90-120 min per suite (install ~30min + eval ~60-90min)")
     print("  If this is your first deploy, confirm the SNS subscription email to receive notifications.")

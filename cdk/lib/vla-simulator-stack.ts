@@ -46,9 +46,10 @@ const DLAMI_MAPPING: Record<string, string> = {
 };
 
 const INSTANCE_TYPES: Record<string, string[]> = {
-  gr00t:     ['g6.12xlarge', 'g5.12xlarge', 'g6.xlarge', 'g5.xlarge'],
-  'gr00t-gr1': ['g6.12xlarge', 'g5.12xlarge', 'g6.xlarge', 'g5.xlarge'],
-  pi:        ['g5.xlarge',   'g5.2xlarge',  'g6.xlarge', 'g6.2xlarge'],
+  gr00t:         ['g6.12xlarge', 'g5.12xlarge', 'g6.xlarge',  'g5.xlarge'],
+  'gr00t-gr1':   ['g6.12xlarge', 'g5.12xlarge', 'g6.xlarge',  'g5.xlarge'],
+  pi:            ['g5.xlarge',   'g5.2xlarge',  'g6.xlarge',  'g6.2xlarge'],
+  'openvla-oft': ['g6.xlarge',   'g5.xlarge',   'g6.2xlarge', 'g5.2xlarge'],
 };
 
 export class VlaSimulatorStack extends cdk.Stack {
@@ -288,7 +289,7 @@ export class VlaSimulatorStack extends cdk.Stack {
     // ── Outputs ───────────────────────────────────────────────────
     new cdk.CfnOutput(this, 'S3BucketName', {
       value: bucket.bucketName,
-      description: `Results S3 bucket (download: aws s3 sync s3://BUCKET/${vla === 'gr00t' ? 'gr00t' : 'pi'}-results/RUN_ID/ ./results/)`,
+      description: `Results S3 bucket (download: aws s3 sync s3://BUCKET/RUN_ID/ ./${vla}-results/RUN_ID/)`,
     });
     new cdk.CfnOutput(this, 'SNSTopicArn', {
       value: topic.topicArn,

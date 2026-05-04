@@ -1,12 +1,12 @@
 # VLA Simulator — 1-Click VLA Simulation on AWS
 
-Run Vision-Language-Action (VLA) robot simulation workloads on AWS GPU instances with a single command. Supports NVIDIA GR00T N1.7, GR00T N1.6 (GR1 humanoid), and π0.5 (openpi).
+Run Vision-Language-Action (VLA) robot simulation workloads on AWS GPU instances with a single command. Supports NVIDIA GR00T N1.7, GR00T N1.6 (GR1 humanoid), π0.5 (openpi), and OpenVLA-OFT.
 
 ## Overview
 
 | Feature | Detail |
 |---------|--------|
-| **Models** | GR00T N1.7-LIBERO, GR00T N1.6-3B (GR1), π0.5 (pi05_libero) |
+| **Models** | GR00T N1.7-LIBERO, GR00T N1.6-3B (GR1), π0.5 (pi05_libero), OpenVLA-OFT (LIBERO-10) |
 | **Simulation** | LIBERO / RoboCasa (robosuite + MuJoCo, headless EGL) |
 | **Deploy** | AWS CDK + EC2 GPU (g6/g5, us-east-1) |
 | **Results** | S3 (MP4 video + summary) + SNS email |
@@ -19,6 +19,7 @@ Run Vision-Language-Action (VLA) robot simulation workloads on AWS GPU instances
 | `gr00t` | GR00T N1.7-LIBERO | LIBERO-10 kitchen tasks | Franka Panda (7-DOF) | `GR00T-Demo` |
 | `gr00t-gr1` | GR00T N1.6-3B | RoboCasa GR1 tabletop tasks | Fourier GR1 humanoid (22-DOF) | `GR00T-GR1-Demo` |
 | `pi` | π0.5 (pi05_libero) | LIBERO spatial/object | Franka Panda (7-DOF) | `Pi-Demo` |
+| `openvla-oft` | OpenVLA-OFT-7B (LIBERO-10 fine-tune) | LIBERO-10 long-horizon | Franka Panda (7-DOF) | `OpenVLA-OFT-Demo` |
 
 ### Architecture
 
@@ -85,6 +86,9 @@ python deploy.py --vla gr00t-gr1 --email you@example.com
 
 # π0.5 — LIBERO spatial + object tasks (~4 hrs)
 python deploy.py --vla pi --email you@example.com
+
+# OpenVLA-OFT — LIBERO-10 long-horizon (~3 hrs, local mode only)
+python deploy.py --vla openvla-oft --email you@example.com
 ```
 
 On first deploy you will receive an SNS subscription confirmation email — **click the link** to enable notifications.
@@ -100,6 +104,9 @@ aws logs tail /gr00t-gr1/userdata --follow --region us-east-1
 
 # π0.5 logs
 aws logs tail /pi/userdata --follow --region us-east-1
+
+# OpenVLA-OFT logs
+aws logs tail /openvla-oft/userdata --follow --region us-east-1
 ```
 
 ### 4. Results
@@ -127,6 +134,7 @@ Each `task-N/` folder contains:
 python destroy.py --vla gr00t
 python destroy.py --vla gr00t-gr1
 python destroy.py --vla pi
+python destroy.py --vla openvla-oft
 ```
 
 The S3 results bucket is **retained** after stack deletion to preserve simulation outputs.
@@ -143,6 +151,7 @@ The S3 results bucket is **retained** after stack deletion to preserve simulatio
 | `gr00t-gr1` | PnPCanToDrawerClose (GR1) | 0% (pre-trained N1.6 not supported) | validated 2026-04-12 |
 | `pi` | libero_object | ~80–94% | validated 2026-04-27 |
 | `pi` | libero_spatial | ~85–95% | validated 2026-04-27 |
+| `openvla-oft` | libero_10 (long-horizon) | ~94.5% (paper) | **pending validation** |
 
 **Validated results (us-east-1, g6.12xlarge / g5.xlarge):**
 - GR00T N1.7: KITCHEN_SCENE3 = 1.0 (5/5), KITCHEN_SCENE4 = 1.0 (3/3)

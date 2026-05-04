@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
 vla-simulator Stack Destroy
-Usage: python destroy.py --vla gr00t     [--region REGION]
-       python destroy.py --vla gr00t-gr1 [--region REGION]
-       python destroy.py --vla pi        [--region REGION]
+Usage: python destroy.py --vla gr00t       [--region REGION]
+       python destroy.py --vla gr00t-gr1   [--region REGION]
+       python destroy.py --vla pi          [--region REGION]
+       python destroy.py --vla openvla-oft [--region REGION]
 
 Notes:
   - The S3 bucket is NOT deleted (RemovalPolicy.RETAIN).
@@ -22,7 +23,12 @@ import yaml
 
 BASE_DIR = Path(__file__).parent
 
-STACK_NAMES = {"gr00t": "GR00T-Demo", "gr00t-gr1": "GR00T-GR1-Demo", "pi": "Pi-Demo"}
+STACK_NAMES = {
+    "gr00t": "GR00T-Demo",
+    "gr00t-gr1": "GR00T-GR1-Demo",
+    "pi": "Pi-Demo",
+    "openvla-oft": "OpenVLA-OFT-Demo",
+}
 
 
 def _validate_region(region: str) -> str:
@@ -34,7 +40,7 @@ def _validate_region(region: str) -> str:
 
 def main():
     parser = argparse.ArgumentParser(description="vla-simulator Stack Destroy")
-    parser.add_argument("--vla", required=True, choices=["gr00t", "gr00t-gr1", "pi"],
+    parser.add_argument("--vla", required=True, choices=["gr00t", "gr00t-gr1", "pi", "openvla-oft"],
                         help="VLA model stack to destroy")
     parser.add_argument("--region", "-r", metavar="REGION",
                         help="AWS region (overrides simulator-config.yaml)")
