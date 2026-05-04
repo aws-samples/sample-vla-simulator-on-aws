@@ -206,6 +206,12 @@ pip install --no-cache-dir -e . \
     2>&1 | tee /tmp/oft_pip_install.log \
     || die "openvla-oft pip install failed (see /tmp/oft_pip_install.log)"
 
+# Verify openvla-oft install — prismatic must import before LIBERO reqs pollute numpy.
+# (We re-verify after LIBERO install in [4/6] below.)
+python -c "import prismatic; print('prismatic OK:', prismatic.__file__)" \
+    2>&1 | tee /tmp/oft_import_check_stage1.log \
+    || die "prismatic import failed after openvla-oft install (see /tmp/oft_import_check_stage1.log)"
+
 # FlashAttention 2 (prebuilt wheel — fast) — required for parallel decoding attention
 log "[3/6] Installing FlashAttention 2 (flash-attn==2.5.5)..."
 pip install --no-cache-dir packaging ninja 2>&1 | tee /tmp/oft_ninja.log || true
@@ -227,12 +233,48 @@ fi
 log "  LIBERO commit: $(git -C "${LIBERO_DIR}" rev-parse HEAD)"
 
 log "[4/6] pip install -e LIBERO + libero_requirements.txt..."
-pip install --no-cache-dir -e "${LIBERO_DIR}" \
+# LIBERO uses namespace-package layout (libero/libero/ with no top-level __init__.py).
+# Modern pip editable installs (PEP 660 finder) fail to resolve `libero.libero` from this layout,
+# so force the legacy .pth-based editable mode which works.
+pip install --no-cache-dir -e "${LIBERO_DIR}" --config-settings editable_mode=compat \
     2>&1 | tee /tmp/oft_libero_install.log \
     || die "LIBERO pip install failed"
 pip install --no-cache-dir -r "${OFT_DIR}/experiments/robot/libero/libero_requirements.txt" \
     2>&1 | tee /tmp/oft_libero_reqs.log \
     || die "libero_requirements.txt install failed"
+
+# libero_requirements.txt pulls opencv-python which upgrades numpy to 2.x,
+# breaking tensorflow==2.15 (numpy<2) and torch 2.2.0 (compiled vs numpy 1.x) ABI.
+# Pin numpy<2 as the final step so tf/torch remain functional.
+log "[4/6] Pinning numpy<2 (tensorflow 2.15 + torch 2.2.0 ABI compatibility)..."
+pip install --no-cache-dir --force-reinstall "numpy<2" \
+    2>&1 | tee /tmp/oft_numpy_pin.log \
+    || die "numpy<2 pin failed"
+
+# Pre-create LIBERO config.yaml so `from libero.libero import ...` doesn't hit interactive input() on first import.
+log "[4/6] Pre-creating LIBERO config.yaml..."
+mkdir -p /root/.libero
+LIBERO_PKG_DIR="${LIBERO_DIR}/libero/libero"
+cat > /root/.libero/config.yaml << LIBEROCFG
+assets: ${LIBERO_PKG_DIR}/assets
+bddl_files: ${LIBERO_PKG_DIR}/bddl_files
+benchmark_root: ${LIBERO_PKG_DIR}
+datasets: ${LIBERO_PKG_DIR}/../datasets
+init_states: ${LIBERO_PKG_DIR}/init_files
+LIBEROCFG
+log "  LIBERO config: /root/.libero/config.yaml"
+
+# Final import verification — all required modules must load before we proceed to eval.
+log "[4/6] Verifying imports (libero, prismatic, tensorflow, torch, numpy)..."
+python -c "
+from libero.libero import benchmark
+import prismatic
+import tensorflow as tf, torch, numpy as np
+print('libero:', benchmark.__file__)
+print('prismatic:', prismatic.__file__)
+print('tf:', tf.__version__, 'torch:', torch.__version__, 'numpy:', np.__version__)
+" 2>&1 | tee /tmp/oft_import_check_stage2.log \
+    || die "Post-install import check failed (see /tmp/oft_import_check_stage2.log)"
 
 # ── [5/6] Pre-download HF checkpoint + run eval ───────────────────
 export MUJOCO_GL=egl
@@ -279,6 +321,8 @@ for TASK_IDX in $(seq 0 $((TASK_COUNT - 1))); do
     touch /tmp/oft_task${TASK_IDX}_start.marker
 
     # Run LIBERO eval — from openvla-oft dir because save_rollout_video uses relative path ./rollouts/
+    # Capture eval exit code so we can fail hard after uploading diagnostic logs.
+    set +e
     (
         cd "${OFT_DIR}"
         python experiments/robot/libero/run_libero_eval.py \
@@ -287,8 +331,12 @@ for TASK_IDX in $(seq 0 $((TASK_COUNT - 1))); do
             --num_trials_per_task "${NUM_TRIALS}" \
             --center_crop True \
             --use_wandb False
-    ) 2>&1 | tee "/tmp/oft_task${TASK_IDX}.log" \
-        || log "  [warn] Task ${TASK_IDX} eval returned non-zero (continuing)"
+    ) 2>&1 | tee "/tmp/oft_task${TASK_IDX}.log"
+    EVAL_EXIT=${PIPESTATUS[0]}
+    set -e
+    if [ "${EVAL_EXIT}" -ne 0 ]; then
+        log "  [error] Task ${TASK_IDX} eval exit=${EVAL_EXIT} — will fail after uploading diagnostics"
+    fi
 
     # Move rollouts into task video dir (openvla-oft saves to ./rollouts/YYYY_MM_DD/...mp4)
     find "${OFT_DIR}/rollouts" -name "*.mp4" -newer /tmp/oft_task${TASK_IDX}_start.marker \
@@ -372,6 +420,15 @@ for TASK_IDX in $(seq 0 $((TASK_COUNT - 1))); do
     SUMMARY_ALL="${SUMMARY_ALL}
 [Task $((TASK_IDX+1))] ${SUITE} — success_rate=${SR} (${NUM_TRIALS} trials/task × 10 tasks)"
     log "  Task $((TASK_IDX+1)) done"
+
+    # Hard-fail after S3 upload if eval crashed. This prevents silent CFN SUCCESS when
+    # eval never produced rollouts (e.g., import errors, missing deps).
+    if [ "${EVAL_EXIT}" -ne 0 ]; then
+        die "Task ${TASK_IDX} eval failed (exit=${EVAL_EXIT}) — see s3://${S3_BUCKET}/${RUN_ID}/task-${TASK_IDX}/eval.log"
+    fi
+    if [ "${VIDEO_COUNT}" -eq 0 ]; then
+        die "Task ${TASK_IDX} produced 0 rollouts — eval likely short-circuited (see s3://${S3_BUCKET}/${RUN_ID}/task-${TASK_IDX}/eval.log)"
+    fi
 done
 
 # ── [6/6] SNS notification + cfn-signal ──────────────────────────
