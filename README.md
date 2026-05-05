@@ -14,12 +14,15 @@ Run Vision-Language-Action (VLA) robot simulation workloads on AWS GPU instances
 
 ### Supported VLA Combinations
 
-| `--vla` | Model | Sim Environment | Robot | Stack |
-|---------|-------|----------------|-------|-------|
-| `gr00t` | GR00T N1.7-LIBERO | LIBERO-10 kitchen tasks | Franka Panda (7-DOF) | `GR00T-Demo` |
-| `gr00t-gr1` | GR00T N1.6-3B | RoboCasa GR1 tabletop tasks | Fourier GR1 humanoid (22-DOF) | `GR00T-GR1-Demo` |
-| `pi` | π0.5 (pi05_libero) | LIBERO spatial/object | Franka Panda (7-DOF) | `Pi-Demo` |
-| `openvla-oft` | OpenVLA-OFT-7B (LIBERO-10 fine-tune) | LIBERO-10 long-horizon | Franka Panda (7-DOF) | `OpenVLA-OFT-Demo` |
+| `--vla` | `--libero-suite` | Model | Sim Environment | Robot | Stack |
+|---------|------------------|-------|----------------|-------|-------|
+| `gr00t` | — | GR00T N1.7-LIBERO | LIBERO-10 kitchen tasks | Franka Panda (7-DOF) | `GR00T-Demo` |
+| `gr00t-gr1` | — | GR00T N1.6-3B | RoboCasa GR1 tabletop tasks | Fourier GR1 humanoid (22-DOF) | `GR00T-GR1-Demo` |
+| `pi` | — | π0.5 (pi05_libero) | LIBERO spatial/object | Franka Panda (7-DOF) | `Pi-Demo` |
+| `openvla-oft` | `spatial` | OpenVLA-OFT-7B (LIBERO-Spatial fine-tune) | LIBERO-Spatial | Franka Panda (7-DOF) | `OpenVLA-OFT-Spatial-Demo` |
+| `openvla-oft` | `object` | OpenVLA-OFT-7B (LIBERO-Object fine-tune) | LIBERO-Object | Franka Panda (7-DOF) | `OpenVLA-OFT-Object-Demo` |
+| `openvla-oft` | `goal` | OpenVLA-OFT-7B (LIBERO-Goal fine-tune) | LIBERO-Goal | Franka Panda (7-DOF) | `OpenVLA-OFT-Goal-Demo` |
+| `openvla-oft` | `10` (default, alias `long`) | OpenVLA-OFT-7B (LIBERO-10 fine-tune) | LIBERO-10 long-horizon | Franka Panda (7-DOF) | `OpenVLA-OFT-Demo` |
 
 ### Architecture
 
@@ -87,8 +90,15 @@ python deploy.py --vla gr00t-gr1 --email you@example.com
 # π0.5 — LIBERO spatial + object tasks (~4 hrs)
 python deploy.py --vla pi --email you@example.com
 
-# OpenVLA-OFT — LIBERO-10 long-horizon (~3 hrs, local mode only)
+# OpenVLA-OFT — LIBERO-10 long-horizon (~3 hrs, local mode only; default suite)
 python deploy.py --vla openvla-oft --email you@example.com
+
+# OpenVLA-OFT — LIBERO-Spatial short-horizon (~1.5 hrs)
+python deploy.py --vla openvla-oft --libero-suite spatial --email you@example.com
+
+# Other short-horizon suites: object, goal
+python deploy.py --vla openvla-oft --libero-suite object --email you@example.com
+python deploy.py --vla openvla-oft --libero-suite goal   --email you@example.com
 ```
 
 On first deploy you will receive an SNS subscription confirmation email — **click the link** to enable notifications.
@@ -134,7 +144,8 @@ Each `task-N/` folder contains:
 python destroy.py --vla gr00t
 python destroy.py --vla gr00t-gr1
 python destroy.py --vla pi
-python destroy.py --vla openvla-oft
+python destroy.py --vla openvla-oft                         # default suite (10)
+python destroy.py --vla openvla-oft --libero-suite spatial  # non-default suite
 ```
 
 The S3 results bucket is **retained** after stack deletion to preserve simulation outputs.
@@ -151,7 +162,10 @@ The S3 results bucket is **retained** after stack deletion to preserve simulatio
 | `gr00t-gr1` | PnPCanToDrawerClose (GR1) | 0% (pre-trained N1.6 not supported) | validated 2026-04-12 |
 | `pi` | libero_object | ~80–94% | validated 2026-04-27 |
 | `pi` | libero_spatial | ~85–95% | validated 2026-04-27 |
-| `openvla-oft` | libero_10 (long-horizon) | ~94.5% (paper) | validated 2026-05-04 |
+| `openvla-oft --libero-suite spatial` | libero_spatial | 97.6% (paper Table I) | pending smoke test |
+| `openvla-oft --libero-suite object` | libero_object | 98.4% (paper Table I) | pending smoke test |
+| `openvla-oft --libero-suite goal` | libero_goal | 97.9% (paper Table I) | pending smoke test |
+| `openvla-oft --libero-suite 10` | libero_10 (long-horizon) | 94.5% (paper Table I) | validated 2026-05-04 |
 
 **Validated results (us-east-1, g6.12xlarge / g5.xlarge / g6.xlarge):**
 - GR00T N1.7: KITCHEN_SCENE3 = 1.0 (5/5), KITCHEN_SCENE4 = 1.0 (3/3)

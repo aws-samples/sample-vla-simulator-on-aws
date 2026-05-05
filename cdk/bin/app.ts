@@ -3,10 +3,11 @@
  * vla-simulator CDK App Entry Point
  *
  * 사용법: deploy.py가 자동 호출 (직접 호출 시 예시):
- *   npx cdk deploy GR00T-Demo        -c region=us-east-1 -c vla=gr00t
- *   npx cdk deploy GR00T-GR1-Demo    -c region=us-east-1 -c vla=gr00t-gr1
- *   npx cdk deploy Pi-Demo           -c region=us-east-1 -c vla=pi
- *   npx cdk deploy OpenVLA-OFT-Demo  -c region=us-east-1 -c vla=openvla-oft
+ *   npx cdk deploy GR00T-Demo                  -c region=us-east-1 -c vla=gr00t
+ *   npx cdk deploy GR00T-GR1-Demo              -c region=us-east-1 -c vla=gr00t-gr1
+ *   npx cdk deploy Pi-Demo                     -c region=us-east-1 -c vla=pi
+ *   npx cdk deploy OpenVLA-OFT-Demo            -c region=us-east-1 -c vla=openvla-oft
+ *   npx cdk deploy OpenVLA-OFT-Spatial-Demo    -c region=us-east-1 -c vla=openvla-oft -c libero_suite=spatial
  */
 
 import * as cdk from 'aws-cdk-lib';
@@ -26,23 +27,44 @@ if (!vla || !['gr00t', 'gr00t-gr1', 'pi', 'openvla-oft'].includes(vla)) {
   );
 }
 
+// OpenVLA-OFT only: LIBERO suite ("10" = default, legacy stack name preserved)
+const OFT_SUITES = ['spatial', 'object', 'goal', '10', 'long'] as const;
+const normaliseSuite = (s: string): string => (s === 'long' ? '10' : s);
+const rawSuite: string = app.node.tryGetContext('libero_suite') ?? '10';
+if (vla === 'openvla-oft' && !OFT_SUITES.includes(rawSuite as typeof OFT_SUITES[number])) {
+  throw new Error(
+    `Invalid libero_suite "${rawSuite}". Supported: ${OFT_SUITES.join(', ')}.`,
+  );
+}
+const liberoSuite = vla === 'openvla-oft' ? normaliseSuite(rawSuite) : '';
+
+const suiteCap = (s: string): string => s.charAt(0).toUpperCase() + s.slice(1);
+const oftStackName = (suite: string): string =>
+  suite === '10' ? 'OpenVLA-OFT-Demo' : `OpenVLA-OFT-${suiteCap(suite)}-Demo`;
+
 const stackNameMap: Record<string, string> = {
   'gr00t':       'GR00T-Demo',
   'gr00t-gr1':   'GR00T-GR1-Demo',
   'pi':          'Pi-Demo',
-  'openvla-oft': 'OpenVLA-OFT-Demo',
+  'openvla-oft': oftStackName(liberoSuite),
 };
 const stackName = stackNameMap[vla];
+
+const oftDescription = (suite: string): string => {
+  if (suite === '10') return 'OpenVLA-OFT + LIBERO-10 (Franka Panda, long-horizon)';
+  return `OpenVLA-OFT + LIBERO-${suiteCap(suite)} (Franka Panda)`;
+};
 
 const descriptionMap: Record<string, string> = {
   'gr00t':       'GR00T N1.7 + LIBERO (Franka Panda)',
   'gr00t-gr1':   'GR00T N1.6 + RoboCasa (Fourier GR1 humanoid)',
   'pi':          'π0.5',
-  'openvla-oft': 'OpenVLA-OFT + LIBERO-10 (Franka Panda, long-horizon)',
+  'openvla-oft': oftDescription(liberoSuite),
 };
 
 const stack = new VlaSimulatorStack(app, stackName, {
   vla,
+  liberoSuite,
   env: {
     account: process.env.CDK_DEFAULT_ACCOUNT,
     region,

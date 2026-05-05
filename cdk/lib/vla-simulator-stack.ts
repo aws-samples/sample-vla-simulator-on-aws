@@ -27,6 +27,8 @@ import { AzSelectorConstruct } from './az-selector';
 
 export interface VlaSimulatorStackProps extends cdk.StackProps {
   vla: string;
+  /** OpenVLA-OFT only: selected LIBERO suite (spatial | object | goal | 10). */
+  liberoSuite?: string;
 }
 
 /**
@@ -56,7 +58,7 @@ export class VlaSimulatorStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: VlaSimulatorStackProps) {
     super(scope, id, props);
 
-    const { vla } = props;
+    const { vla, liberoSuite } = props;
 
     // ── Load config ──────────────────────────────────────────────
     const simConfigPath = path.resolve(__dirname, '../../simulator-config.yaml');
@@ -87,8 +89,16 @@ export class VlaSimulatorStack extends cdk.Stack {
       ? (instanceCfg.ebs_gb_bridge ?? instanceCfg.ebs_gb ?? 200)
       : (instanceCfg.ebs_gb ?? 200);
 
-    // CreationPolicy timeout from model config (e.g. PT180M, PT240M)
-    const creationTimeout: string = instanceCfg.creationpolicy_timeout ?? 'PT180M';
+    // CreationPolicy timeout from model config. For openvla-oft this is a suite-keyed
+    // map (PT120M for short-horizon, PT240M for LIBERO-10); for others it's a scalar.
+    const rawTimeout: string | Record<string, string> = instanceCfg.creationpolicy_timeout ?? 'PT180M';
+    let creationTimeout: string;
+    if (typeof rawTimeout === 'string') {
+      creationTimeout = rawTimeout;
+    } else {
+      const suiteKey = liberoSuite || '10';
+      creationTimeout = rawTimeout[suiteKey] ?? rawTimeout['10'] ?? 'PT180M';
+    }
 
     // ── AMI ───────────────────────────────────────────────────────
     const region = this.region;

@@ -36,6 +36,13 @@ import boto3
 import yaml
 from botocore.exceptions import ClientError
 
+from generate import (
+    OFT_DEFAULT_SUITE,
+    OFT_LIBERO_SUITES,
+    normalise_libero_suite,
+    oft_stack_name,
+)
+
 BASE_DIR = Path(__file__).parent
 
 
@@ -104,6 +111,7 @@ def _maybe_import_orphan_bucket(
     extra_ctx: list[str],
     cdk_out_dir: str = "cdk.out",
     vla: str = "",
+    libero_suite: str = "",
 ) -> None:
     """S3 bucket이 orphan (RETAIN 후 stack 삭제됨)이면 cdk import로 재채택."""
     sts = boto3.client("sts", region_name=region)
@@ -134,11 +142,13 @@ def _maybe_import_orphan_bucket(
         mapping_file = fh.name
 
     vla_ctx = ["-c", f"vla={vla}"] if vla else []
+    suite_ctx = ["-c", f"libero_suite={shlex.quote(libero_suite)}"] if libero_suite else []
     cdk_import_cmd = [
         "npx", "cdk", "import", stack_name,
         "-c", f"region={shlex.quote(region)}",
         "-c", f"notify_email={safe_email}",
         *vla_ctx,
+        *suite_ctx,
         "--resource-mapping", mapping_file,
         "--force",
         "--output", cdk_out_dir,
@@ -158,6 +168,10 @@ def main():
                         help="Notification email (overrides simulator-config.yaml)")
     parser.add_argument("--region", "-r", metavar="REGION",
                         help="AWS region (overrides simulator-config.yaml)")
+    parser.add_argument(
+        "--libero-suite", default=OFT_DEFAULT_SUITE, choices=list(OFT_LIBERO_SUITES),
+        help="openvla-oft only: LIBERO suite (default: 10 = LIBERO-Long; `long` aliases `10`)",
+    )
     args = parser.parse_args()
 
     config = _load_config(args.vla)
@@ -213,12 +227,13 @@ def main():
             extra_cdk_ctx = ["-c", f"vpc_id={safe_vpc}", "-c", f"nlb_endpoint={shlex.quote(resolved_nlb)}"]
             generate_extra = ["--resolved-vpc", resolved_vpc, "--resolved-nlb", resolved_nlb]
 
+    libero_suite = normalise_libero_suite(args.libero_suite)
     if args.vla == "gr00t":
         stack_name = "GR00T-Demo"
     elif args.vla == "gr00t-gr1":
         stack_name = "GR00T-GR1-Demo"
     elif args.vla == "openvla-oft":
-        stack_name = "OpenVLA-OFT-Demo"
+        stack_name = oft_stack_name(libero_suite)
     else:
         stack_name = "Pi-Demo"
     mode = "bridge" if args.bridge else "local"
@@ -230,17 +245,23 @@ def main():
     print(f"[deploy] Email:  {email}")
     print(f"[deploy] Mode:   {mode}")
     print(f"[deploy] Stack:  {stack_name}")
+    if args.vla == "openvla-oft":
+        print(f"[deploy] Suite:  libero_{libero_suite}")
     if vpc_id:
         print(f"[deploy] VPC:    {vpc_id}")
     print()
 
     # 1. Generate UserData
     print("[1/2] Generating UserData script...")
+    oft_suite_args: list[str] = []
+    if args.vla == "openvla-oft":
+        oft_suite_args = ["--libero-suite", shlex.quote(libero_suite)]
     subprocess.run(  # nosec B603 - sys.executable is the current Python interpreter, not user input
         [
             sys.executable, "generate.py",
             "--vla", args.vla,
             "--output-dir", "assets/userdata",
+            *oft_suite_args,
             *generate_extra,
         ],
         cwd=str(BASE_DIR),
@@ -248,8 +269,12 @@ def main():
     )
     print()
 
-    # Use a VLA-specific output dir so parallel deploys don't clash on cdk.out
-    cdk_out_dir = f"cdk.out-{args.vla}"
+    # Use a VLA-specific output dir so parallel deploys don't clash on cdk.out.
+    # For OpenVLA-OFT, include the suite so e.g. spatial + 10 can synth independently.
+    if args.vla == "openvla-oft" and libero_suite != OFT_DEFAULT_SUITE:
+        cdk_out_dir = f"cdk.out-{args.vla}-{libero_suite}"
+    else:
+        cdk_out_dir = f"cdk.out-{args.vla}"
 
     # 1.5 Pre-deploy: re-adopt orphan S3 bucket
     _maybe_import_orphan_bucket(
@@ -258,6 +283,7 @@ def main():
         s3_results_prefix, extra_cdk_ctx,
         cdk_out_dir=cdk_out_dir,
         vla=args.vla,
+        libero_suite=libero_suite if args.vla == "openvla-oft" else "",
     )
 
     # 2. CDK deploy
@@ -273,17 +299,24 @@ def main():
         elif args.vla == "gr00t-gr1":
             print("  Estimated time: ~90 min (install ~20min + model download ~5min + sim ~60min)")
         elif args.vla == "openvla-oft":
-            print("  Estimated time: ~180 min (conda/pip ~30min + HF download ~10min + LIBERO-10 eval ~120min)")
+            if libero_suite == "10":
+                print("  Estimated time: ~180 min (conda/pip ~30min + HF download ~10min + LIBERO-10 eval ~120min)")
+            else:
+                print(f"  Estimated time: ~90 min (conda/pip ~30min + HF download ~10min + LIBERO-{libero_suite} eval ~45min)")
         else:
             print("  Estimated time: ~90-120 min per suite (install ~30min + eval ~60-90min)")
     print("  If this is your first deploy, confirm the SNS subscription email to receive notifications.")
     print()
 
+    oft_cdk_ctx: list[str] = []
+    if args.vla == "openvla-oft":
+        oft_cdk_ctx = ["-c", f"libero_suite={shlex.quote(libero_suite)}"]
     cdk_cmd = [
         "npx", "cdk", "deploy", stack_name,
         "-c", f"region={safe_region}",
         "-c", f"notify_email={safe_email}",
         "-c", f"vla={args.vla}",
+        *oft_cdk_ctx,
         "--require-approval", "never",
         "--output", cdk_out_dir,
         *extra_cdk_ctx,
@@ -294,7 +327,10 @@ def main():
     print("[deploy] Done! Simulation is running in the background.")
     print(f"  A completion notification will be sent to: {email}")
     vla_safe = shlex.quote(args.vla)
-    print(f"  To clean up: python destroy.py --vla {vla_safe}")
+    if args.vla == "openvla-oft" and libero_suite != OFT_DEFAULT_SUITE:
+        print(f"  To clean up: python destroy.py --vla {vla_safe} --libero-suite {shlex.quote(libero_suite)}")
+    else:
+        print(f"  To clean up: python destroy.py --vla {vla_safe}")
 
 
 if __name__ == "__main__":

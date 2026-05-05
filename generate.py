@@ -26,6 +26,24 @@ from jinja2 import Environment, FileSystemLoader
 BASE_DIR = Path(__file__).parent
 TEMPLATES_DIR = BASE_DIR / "templates"
 
+# OpenVLA-OFT supported LIBERO suites (`long` is an alias for `10`).
+OFT_LIBERO_SUITES = ("spatial", "object", "goal", "10", "long")
+OFT_DEFAULT_SUITE = "10"
+
+
+def normalise_libero_suite(suite: str) -> str:
+    """`long` → `10` (OFT paper: LIBERO-Long = LIBERO-10)."""
+    return "10" if suite == "long" else suite
+
+
+def oft_stack_name(suite: str) -> str:
+    """Stack id for a given suite. Default (`10`) preserves legacy name for
+    backwards compatibility with existing deployments."""
+    s = normalise_libero_suite(suite)
+    if s == OFT_DEFAULT_SUITE:
+        return "OpenVLA-OFT-Demo"
+    return f"OpenVLA-OFT-{s.capitalize()}-Demo"
+
 
 def _load_merged_config(simulator_config_path: Path, vla: str) -> dict:
     """simulator-config.yaml + models/{vla}.yaml 병합. 모델 설정 우선."""
@@ -95,24 +113,40 @@ def generate_gr00t_gr1(config: dict, resolved_grpc: str, resolved_vpc: str, dry_
     return env.get_template("gr00t-gr1-userdata.sh.j2").render(**ctx)
 
 
-def generate_openvla_oft(config: dict, dry_run: bool) -> str:
-    tasks = config.get("tasks", [])
+def generate_openvla_oft(config: dict, libero_suite: str, dry_run: bool) -> str:
+    suite = normalise_libero_suite(libero_suite)
+    model = config.get("model", {})
+    suites = model.get("suites", {})
+    suite_cfg = suites.get(suite)
+    if not suite_cfg:
+        print(f"[error] models/openvla-oft.yaml의 model.suites에 '{suite}' 항목이 없습니다. "
+              f"사용 가능: {sorted(suites.keys())}", file=sys.stderr)
+        sys.exit(1)
+
+    tasks_by_suite = config.get("tasks", {})
+    if isinstance(tasks_by_suite, list):
+        # Backwards-compat: flat list treated as the default suite.
+        tasks = tasks_by_suite
+    else:
+        tasks = tasks_by_suite.get(suite, [])
     if not tasks:
-        print("[error] models/openvla-oft.yaml에 tasks 항목이 없습니다.", file=sys.stderr)
+        print(f"[error] models/openvla-oft.yaml에 suite '{suite}'의 tasks가 없습니다.", file=sys.stderr)
         sys.exit(1)
 
     tasks_json = json.dumps(tasks, ensure_ascii=False)
     deployment = config.get("deployment", {})
-    model = config.get("model", {})
 
     ctx = {
         "tasks_json": tasks_json,
         "deployment": deployment,
-        "hf_repo": model.get("hf_repo", "moojink/openvla-7b-oft-finetuned-libero-10"),
-        "hf_model_revision": model.get("hf_model_revision", ""),
+        "libero_suite": suite,
+        "hf_repo": suite_cfg["hf_repo"],
+        "hf_model_revision": suite_cfg.get("hf_model_revision", ""),
+        "task_suite_name": suite_cfg["task_suite_name"],
         "oft_commit": model.get("oft_commit", ""),
         "transformers_fork_commit": model.get("transformers_fork_commit", ""),
         "libero_commit": model.get("libero_commit", "master"),
+        "center_crop": model.get("center_crop", True),
     }
 
     env = Environment(loader=FileSystemLoader(str(TEMPLATES_DIR)), keep_trailing_newline=True)  # nosec B701 - shell script template
@@ -159,6 +193,10 @@ def main():
     parser.add_argument("--resolved-grpc", default="", help="GR00T: resolved gRPC endpoint")
     parser.add_argument("--resolved-vpc", default="", help="resolved VPC ID")
     parser.add_argument("--resolved-nlb", default="", help="Pi: resolved NLB endpoint")
+    parser.add_argument(
+        "--libero-suite", default=OFT_DEFAULT_SUITE, choices=list(OFT_LIBERO_SUITES),
+        help="openvla-oft: LIBERO suite (default: 10 = LIBERO-Long; `long` is alias for `10`)",
+    )
     args = parser.parse_args()
 
     config_path = Path(args.config).resolve()
@@ -176,7 +214,7 @@ def main():
     elif args.vla == "gr00t-gr1":
         rendered = generate_gr00t_gr1(config, args.resolved_grpc, args.resolved_vpc, args.dry_run)
     elif args.vla == "openvla-oft":
-        rendered = generate_openvla_oft(config, args.dry_run)
+        rendered = generate_openvla_oft(config, args.libero_suite, args.dry_run)
     else:
         rendered = generate_pi(config, args.resolved_vpc, args.resolved_nlb, args.dry_run)
 
