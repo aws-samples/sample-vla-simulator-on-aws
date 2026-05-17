@@ -6,6 +6,7 @@ Usage:
   python deploy.py --vla gr00t-gr1          # GR00T N1.6 + GR1 humanoid + RoboCasa local mode
   python deploy.py --vla pi                 # π0.5  local mode
   python deploy.py --vla openvla-oft        # OpenVLA-OFT + LIBERO-10 local mode
+  python deploy.py --vla lap                # LAP-3B + LIBERO-Spatial local mode
   python deploy.py --vla gr00t --bridge     # GR00T bridge mode (vla-hub ECS)
   python deploy.py --vla gr00t-gr1 --bridge # GR00T-GR1 bridge mode (vla-hub ECS, if N1.6 supported)
   python deploy.py --vla pi    --bridge     # π0.5  bridge mode (vla-hub ECS)
@@ -160,7 +161,7 @@ def _maybe_import_orphan_bucket(
 
 def main():
     parser = argparse.ArgumentParser(description="vla-simulator 1-Click Deploy")
-    parser.add_argument("--vla", required=True, choices=["gr00t", "gr00t-gr1", "pi", "openvla-oft"],
+    parser.add_argument("--vla", required=True, choices=["gr00t", "gr00t-gr1", "pi", "openvla-oft", "lap"],
                         help="VLA model to deploy")
     parser.add_argument("--bridge", action="store_true",
                         help="Bridge mode: use vla-hub ECS endpoint instead of local model")
@@ -200,6 +201,10 @@ def main():
         if args.vla == "openvla-oft":
             print("[error] Bridge mode not supported for openvla-oft (local only).", file=sys.stderr)
             sys.exit(1)
+        if args.vla == "lap":
+            print("[error] Bridge mode not yet supported for lap (local only — vla-hub LAP server is a follow-up).",
+                  file=sys.stderr)
+            sys.exit(1)
         if args.vla in ("gr00t", "gr00t-gr1"):
             raw_grpc = str(bridge_cfg.get("remote_grpc_endpoint", "")).strip()
             raw_vpc = str(bridge_cfg.get("vpc_id", "")).strip()
@@ -234,6 +239,8 @@ def main():
         stack_name = "GR00T-GR1-Demo"
     elif args.vla == "openvla-oft":
         stack_name = oft_stack_name(libero_suite)
+    elif args.vla == "lap":
+        stack_name = "LAP-Demo"
     else:
         stack_name = "Pi-Demo"
     mode = "bridge" if args.bridge else "local"
@@ -303,6 +310,8 @@ def main():
                 print("  Estimated time: ~180 min (conda/pip ~30min + HF download ~10min + LIBERO-10 eval ~120min)")
             else:
                 print(f"  Estimated time: ~90 min (conda/pip ~30min + HF download ~10min + LIBERO-{libero_suite} eval ~45min)")
+        elif args.vla == "lap":
+            print("  Estimated time: ~90-150 min (uv venvs ~25min + HF download ~10min + LIBERO-Spatial eval ~30-50min + buffer)")
         else:
             print("  Estimated time: ~90-120 min per suite (install ~30min + eval ~60-90min)")
     print("  If this is your first deploy, confirm the SNS subscription email to receive notifications.")

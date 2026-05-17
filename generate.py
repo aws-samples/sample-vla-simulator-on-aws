@@ -12,6 +12,7 @@ generate.py — model yaml + simulator-config.yaml 읽어 assets/userdata/{vla}.
     python generate.py --vla gr00t-gr1   [--config simulator-config.yaml] [--dry-run]
     python generate.py --vla pi          [--resolved-vpc vpc-xxx --resolved-nlb host:port]
     python generate.py --vla openvla-oft [--config simulator-config.yaml] [--dry-run]
+    python generate.py --vla lap         [--config simulator-config.yaml] [--dry-run]
 """
 
 import argparse
@@ -153,6 +154,30 @@ def generate_openvla_oft(config: dict, libero_suite: str, dry_run: bool) -> str:
     return env.get_template("openvla-oft-userdata.sh.j2").render(**ctx)
 
 
+def generate_lap(config: dict, dry_run: bool) -> str:
+    tasks = config.get("tasks", [])
+    if not tasks:
+        print("[error] models/lap.yaml에 tasks 항목이 없습니다.", file=sys.stderr)
+        sys.exit(1)
+
+    tasks_json = json.dumps(tasks, ensure_ascii=False)
+    deployment = config.get("deployment", {})
+    model = config.get("model", {})
+
+    ctx = {
+        "tasks_json": tasks_json,
+        "deployment": deployment,
+        "lap_commit": model.get("lap_commit", "").strip(),
+        "hf_repo": model.get("hf_repo", "lihzha/LAP-3B-Libero"),
+        "hf_model_revision": model.get("hf_model_revision", ""),
+        "policy_config": model.get("policy_config", "lap_libero"),
+        "policy_type": model.get("policy_type", "flow"),
+    }
+
+    env = Environment(loader=FileSystemLoader(str(TEMPLATES_DIR)), keep_trailing_newline=True)  # nosec B701 - shell script template
+    return env.get_template("lap-userdata.sh.j2").render(**ctx)
+
+
 def generate_pi(config: dict, resolved_vpc: str, resolved_nlb: str, dry_run: bool) -> str:
     tasks = config.get("tasks", [])
     if not tasks:
@@ -181,7 +206,7 @@ def generate_pi(config: dict, resolved_vpc: str, resolved_nlb: str, dry_run: boo
 
 def main():
     parser = argparse.ArgumentParser(description="vla-simulator UserData 스크립트 생성")
-    parser.add_argument("--vla", required=True, choices=["gr00t", "gr00t-gr1", "pi", "openvla-oft"], help="VLA 모델")
+    parser.add_argument("--vla", required=True, choices=["gr00t", "gr00t-gr1", "pi", "openvla-oft", "lap"], help="VLA 모델")
     parser.add_argument(
         "--config", default=str(BASE_DIR / "simulator-config.yaml"),
         help="공통 설정 파일 경로 (기본: simulator-config.yaml)",
@@ -215,6 +240,8 @@ def main():
         rendered = generate_gr00t_gr1(config, args.resolved_grpc, args.resolved_vpc, args.dry_run)
     elif args.vla == "openvla-oft":
         rendered = generate_openvla_oft(config, args.libero_suite, args.dry_run)
+    elif args.vla == "lap":
+        rendered = generate_lap(config, args.dry_run)
     else:
         rendered = generate_pi(config, args.resolved_vpc, args.resolved_nlb, args.dry_run)
 

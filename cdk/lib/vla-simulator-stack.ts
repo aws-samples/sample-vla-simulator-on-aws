@@ -52,6 +52,7 @@ const INSTANCE_TYPES: Record<string, string[]> = {
   'gr00t-gr1':   ['g6.12xlarge', 'g5.12xlarge', 'g6.xlarge',  'g5.xlarge'],
   pi:            ['g5.xlarge',   'g5.2xlarge',  'g6.xlarge',  'g6.2xlarge'],
   'openvla-oft': ['g6.xlarge',   'g5.xlarge',   'g6.2xlarge', 'g5.2xlarge'],
+  lap:           ['g6.xlarge',   'g6.2xlarge',  'g5.xlarge',  'g5.2xlarge'],
 };
 
 export class VlaSimulatorStack extends cdk.Stack {
