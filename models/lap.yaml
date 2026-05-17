@@ -1,0 +1,50 @@
+# LAP-3B (Language-Action Pre-Training) configuration
+# Paper: "LAP: Language-Action Pre-Training Enables Zero-Shot Cross-Embodiment Transfer"
+#        arXiv:2602.10556 (Zha et al., 2026)
+# Repo:  https://github.com/lihzha/lap (Apache-2.0)
+# Goal:  LIBERO-Spatial 1-click eval as 5th VLA in vla-simulator
+#
+# CLI:   python deploy.py --vla lap [--email YOUR@EMAIL.COM]
+#
+# Architecture: PaliGemma-3B backbone + Flow Matching action expert (JAX).
+# Eval pattern: openpi-style websocket policy server (Py3.11+JAX cu12) +
+#               LIBERO sim client (Py3.8+cu113 PyTorch CPU-only) on same instance.
+
+model:
+  id: lap
+  version: "3B"
+
+  # git ls-remote https://github.com/lihzha/lap.git HEAD
+  lap_commit: "3958d1466d5b92445b67de7d4202c19608ad4d56"   # Pinned 2026-05-17
+
+  # HF checkpoint pins (LIBERO fine-tuned variant)
+  # Collection: huggingface.co/collections/lihzha/lap-698a6ad6700a694a5b94dcd8
+  hf_repo: "lihzha/LAP-3B-Libero"
+  hf_model_revision: "11ba16b80b024fd6ee5ef47385a9e8f240212dfb"   # Pinned 2026-05-17
+
+  # serve_policy.py arguments (LAP repo)
+  policy_config: "lap_libero"   # --policy.config (defined in src/lap/training/config.py)
+  policy_type: "flow"            # --policy.type: flow (default, recommended) | ar
+
+  # LIBERO sim ships via the LAP→openpi submodule chain
+  # (third_party/openpi/third_party/libero) — no separate libero_commit needed.
+
+instance:
+  # 24GB VRAM sufficient (paper: RTX 4090 @ 25Hz, ~12-16GB used)
+  preferred: [g6.xlarge, g6.2xlarge, g5.xlarge, g5.2xlarge]
+  ebs_gb: 200          # checkpoint ~12GB + repo+venvs ~15GB + videos + buffer
+  ebs_gb_bridge: 100   # bridge mode: not yet supported
+  # Initial smoke test: conservative. Reduce to PT150M after first successful run.
+  creationpolicy_timeout: PT180M   # install ~25-30 + checkpoint ~10 + eval ~30-50 + buffer
+
+# Initial smoke test: single suite, 5 trials/task. LAP client `main.py` accepts
+# --task_suite_name and --num_trials_per_task; default 50/task is full paper run.
+# Available suites: libero_spatial | libero_object | libero_goal | libero_10 | libero_90
+tasks:
+  - suite: libero_spatial
+    num_trials_per_task: 5
+    description: "LIBERO-Spatial (10 tasks × 5 trials) — smoke test"
+
+# Bridge mode not yet supported — vla-hub LAP server is a follow-up session.
+bridge:
+  enabled: false

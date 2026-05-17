@@ -1,12 +1,12 @@
 # VLA Simulator — 1-Click VLA Simulation on AWS
 
-Run Vision-Language-Action (VLA) robot simulation workloads on AWS GPU instances with a single command. Supports NVIDIA GR00T N1.7, GR00T N1.6 (GR1 humanoid), π0.5 (openpi), and OpenVLA-OFT.
+Run Vision-Language-Action (VLA) robot simulation workloads on AWS GPU instances with a single command. Supports NVIDIA GR00T N1.7, GR00T N1.6 (GR1 humanoid), π0.5 (openpi), OpenVLA-OFT, and LAP-3B.
 
 ## Overview
 
 | Feature | Detail |
 |---------|--------|
-| **Models** | GR00T N1.7-LIBERO, GR00T N1.6-3B (GR1), π0.5 (pi05_libero), OpenVLA-OFT (LIBERO-10) |
+| **Models** | GR00T N1.7-LIBERO, GR00T N1.6-3B (GR1), π0.5 (pi05_libero), OpenVLA-OFT (LIBERO-10), LAP-3B (LIBERO-Spatial) |
 | **Simulation** | LIBERO / RoboCasa (robosuite + MuJoCo, headless EGL) |
 | **Deploy** | AWS CDK + EC2 GPU (g6/g5, us-east-1) |
 | **Results** | S3 (MP4 video + summary) + SNS email |
@@ -20,6 +20,7 @@ Run Vision-Language-Action (VLA) robot simulation workloads on AWS GPU instances
 | `gr00t-gr1` | GR00T N1.6-3B | RoboCasa GR1 tabletop tasks | Fourier GR1 humanoid (22-DOF) | `GR00T-GR1-Demo` |
 | `pi` | π0.5 (pi05_libero) | LIBERO spatial/object | Franka Panda (7-DOF) | `Pi-Demo` |
 | `openvla-oft` | OpenVLA-OFT-7B (LIBERO-10 fine-tune) | LIBERO-10 long-horizon | Franka Panda (7-DOF) | `OpenVLA-OFT-Demo` |
+| `lap` | LAP-3B (PaliGemma-3B + Flow Matching, JAX) | LIBERO-Spatial | Franka Panda (7-DOF) | `LAP-Demo` |
 
 ### Architecture
 
@@ -89,6 +90,9 @@ python deploy.py --vla pi --email you@example.com
 
 # OpenVLA-OFT — LIBERO-10 long-horizon (~3 hrs, local mode only)
 python deploy.py --vla openvla-oft --email you@example.com
+
+# LAP-3B — LIBERO-Spatial (zero-shot cross-embodiment VLA, JAX policy server, ~1.5-2.5 hrs)
+python deploy.py --vla lap --email you@example.com
 ```
 
 On first deploy you will receive an SNS subscription confirmation email — **click the link** to enable notifications.
@@ -107,6 +111,9 @@ aws logs tail /pi/userdata --follow --region us-east-1
 
 # OpenVLA-OFT logs
 aws logs tail /openvla-oft/userdata --follow --region us-east-1
+
+# LAP-3B logs
+aws logs tail /lap/userdata --follow --region us-east-1
 ```
 
 ### 4. Results
@@ -135,6 +142,7 @@ python destroy.py --vla gr00t
 python destroy.py --vla gr00t-gr1
 python destroy.py --vla pi
 python destroy.py --vla openvla-oft
+python destroy.py --vla lap
 ```
 
 The S3 results bucket is **retained** after stack deletion to preserve simulation outputs.
@@ -152,12 +160,14 @@ The S3 results bucket is **retained** after stack deletion to preserve simulatio
 | `pi` | libero_object | ~80–94% | validated 2026-04-27 |
 | `pi` | libero_spatial | ~85–95% | validated 2026-04-27 |
 | `openvla-oft` | libero_10 (long-horizon) | ~94.5% (paper) | validated 2026-05-04 |
+| `lap` | libero_spatial | ~85-95% (paper Table III, LIBERO fine-tuned) | validated 2026-05-17 — 0.98 @ 5 trials/task |
 
 **Validated results (us-east-1, g6.12xlarge / g5.xlarge / g6.xlarge):**
 - GR00T N1.7: KITCHEN_SCENE3 = 1.0 (5/5), KITCHEN_SCENE4 = 1.0 (3/3)
 - GR00T N1.6 + GR1: PosttrainPnP = 0.8 (4/5), PnPCanToDrawer = 0.0 (pre-trained model limitation)
 - π0.5: libero_object = 0.94 (47/50)
 - OpenVLA-OFT: libero_10 = 1.0 (10/10 at 1 trial/task, g6.xlarge)
+- LAP-3B: libero_spatial = 0.98 (49/50, 5 trials/task × 10 tasks, g6.xlarge) — exceeds paper Table III range (85–95%); requires upstream `scripts/libero/main.py` vertical-flip patch (see `templates/lap-userdata.sh.j2`)
 
 ---
 
@@ -202,7 +212,10 @@ vla-simulator/
 ├── simulator-config.yaml     # Shared deployment settings
 ├── models/
 │   ├── gr00t.yaml            # GR00T N1.7 config
-│   └── pi.yaml               # π0.5 config
+│   ├── gr00t-gr1.yaml        # GR00T N1.6 + GR1 humanoid config
+│   ├── pi.yaml               # π0.5 config
+│   ├── openvla-oft.yaml      # OpenVLA-OFT config (per-suite checkpoints)
+│   └── lap.yaml              # LAP-3B config
 ├── deploy.py                 # 1-click deploy entrypoint
 ├── destroy.py                # Stack teardown
 ├── generate.py               # Generates assets/userdata/{vla}.sh from templates
@@ -218,8 +231,11 @@ vla-simulator/
 │       ├── gr00t/            # ZMQ-gRPC bridge for GR00T
 │       └── pi/               # gRPC bridge for π0.5
 └── templates/
-    ├── gr00t-userdata.sh.j2  # Jinja2 template for GR00T UserData
-    └── pi-userdata.sh.j2     # Jinja2 template for π0.5 UserData
+    ├── gr00t-userdata.sh.j2        # Jinja2 template for GR00T UserData
+    ├── gr00t-gr1-userdata.sh.j2    # GR00T N1.6 + GR1 humanoid
+    ├── pi-userdata.sh.j2           # π0.5 (Docker Compose)
+    ├── openvla-oft-userdata.sh.j2  # OpenVLA-OFT (single conda env)
+    └── lap-userdata.sh.j2          # LAP-3B (uv 2-venv: JAX policy + LIBERO sim)
 ```
 
 ---
@@ -290,10 +306,11 @@ npx cdk deploy Pi-Demo    --output cdk.out-pi    -c vla=pi    -c region=us-east-
 
 ## Cost Estimate (us-east-1, on-demand)
 
-| Instance | Spot/OD | Hourly | GR00T (~2h) | π0.5 (~4h) |
-|----------|---------|--------|-------------|------------|
-| g6.12xlarge | On-Demand | ~$4.09 | ~$8.18 | — |
-| g5.xlarge   | On-Demand | ~$1.01 | — | ~$4.04 |
+| Instance | Spot/OD | Hourly | GR00T (~2h) | π0.5 (~4h) | LAP (~2.5h) |
+|----------|---------|--------|-------------|------------|-------------|
+| g6.12xlarge | On-Demand | ~$4.09 | ~$8.18 | — | — |
+| g5.xlarge   | On-Demand | ~$1.01 | — | ~$4.04 | — |
+| g6.xlarge   | On-Demand | ~$0.80 | — | — | ~$2.00 |
 
 Use Spot instances via `deploy.py --spot` (not yet implemented) for 60–70% savings.
 
@@ -303,4 +320,6 @@ Use Spot instances via `deploy.py --spot` (not yet implemented) for 60–70% sav
 
 - [Isaac-GR00T](https://github.com/NVIDIA/Isaac-GR00T) — NVIDIA GR00T foundation model
 - [openpi](https://github.com/Physical-Intelligence/openpi) — Physical Intelligence π0.5
+- [openvla-oft](https://github.com/moojink/openvla-oft) — OpenVLA-OFT (Optimized Fine-Tuning)
+- [lap](https://github.com/lihzha/lap) — LAP: Language-Action Pre-Training (zero-shot cross-embodiment, JAX)
 - [LIBERO](https://libero-project.github.io/) — Long-horizon robot benchmark
