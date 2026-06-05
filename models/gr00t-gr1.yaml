@@ -1,0 +1,59 @@
+# GR00T N1.6 + GR1 Humanoid + RoboCasa configuration
+# Validated combination: GR00T N1.6-3B + Fourier GR1 (22-DOF) + robocasa-gr1-tabletop-tasks
+# Verified in gr00t-enablement-pack: 2026-04-06 (isaac_groot_commit 77866395)
+#
+# Why N1.6 (not N1.7): GR00T-N1.7 released with LIBERO fine-tune only.
+# GR1 humanoid / RoboCasa embodiment requires N1.6-3B checkpoint.
+# LIBERO (Franka Panda 7-DOF) vs RoboCasa (GR1 22-DOF) are completely different embodiments.
+
+model:
+  id: gr00t-gr1
+  version: "N1.6-3B"
+  hf_repo: "nvidia/GR00T-N1.6-3B"
+  hf_subfolder: ""                                                   # Base model (not fine-tuned subfolder)
+  # Version pinning — update when intentionally upgrading
+  # isaac_groot_commit: git ls-remote https://github.com/NVIDIA/Isaac-GR00T.git HEAD
+  isaac_groot_commit: "77866395d6ab601a770f95cf78cf51d5847f6fa1"   # Validated: 2026-04-06
+  # uv: https://github.com/astral-sh/uv/releases/latest
+  uv_version: "0.11.6"                                             # Validated: 2026-04-10
+  # hf_model_revision: huggingface.co/api/models/nvidia/GR00T-N1.6-3B → sha
+  hf_model_revision: "d0814e7ecb19202e7c8468b46098b0b7ef3a6d61"   # Validated: 2026-04-06
+
+instance:
+  preferred: [g6.12xlarge, g5.12xlarge, g6.xlarge, g5.xlarge]
+  ebs_gb: 400
+  ebs_gb_bridge: 400  # Bridge mode: still needs sim env (no model download saving)
+  creationpolicy_timeout: PT180M  # install ~20min + sim ~60min + buffer
+
+# Validated tasks (from gr00t-enablement-pack, 2026-04-12)
+# ┌─────────────────────────────────────────────────┬────────────────────────────────┬──────────────┐
+# │ Task                                            │ Notes                          │ Result       │
+# ├─────────────────────────────────────────────────┼────────────────────────────────┼──────────────┤
+# │ PosttrainPnPNovelFromPlateToBowlSplitA (GR1)    │ post-trained, novel objects     │ 0.8 (4/5 ep) │
+# │ PnPCanToDrawerClose (GR1)                       │ pre-trained not supported       │ 0.0 (0/3 ep) │
+# └─────────────────────────────────────────────────┴────────────────────────────────┴──────────────┘
+tasks:
+  - env_name: gr1_unified/PosttrainPnPNovelFromPlateToBowlSplitA_GR1ArmsAndWaistFourierHands_Env
+    embodiment: GR1
+    n_episodes: 5
+    n_envs: 1
+    max_episode_steps: 300
+    video_fps: 30
+    video_crf: 18
+    steps_per_render: 1
+
+  - env_name: gr1_unified/PnPCanToDrawerClose_GR1ArmsAndWaistFourierHands_Env
+    embodiment: GR1
+    n_episodes: 3
+    n_envs: 1
+    max_episode_steps: 300
+    video_fps: 20
+    video_crf: 22
+    steps_per_render: 2
+
+# Bridge mode — vla-hub ECS gRPC endpoint (leave empty for local mode)
+# Set via SSM: ssm:/vla-hub/gr00t/n1-6/grpc-endpoint (if vla-hub supports N1.6)
+# Or set directly: remote_grpc_endpoint: "internal-xxx.elb.amazonaws.com:50051"
+bridge:
+  remote_grpc_endpoint: ""  # local mode by default (N1.6 GR1 bridge not yet validated)
+  vpc_id: ""

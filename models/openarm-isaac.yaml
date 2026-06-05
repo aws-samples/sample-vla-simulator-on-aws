@@ -1,0 +1,69 @@
+# OpenArm bimanual × π0.5 (LeRobot pi05 folding_latest) + Isaac Lab 2.3 configuration
+# New --vla target: drives the LeRobot pi05 `folding_latest` 16-DOF bimanual checkpoint on the
+# enactic/openarm_isaac_lab bimanual Reach env via a thin LeRobot rollout driver (run_eval.py).
+#
+# SUCCESS BAR = PIPE PROOF (not task success). folding_latest is a real-robot cloth-folding policy;
+# run on an EMPTY bimanual Reach scene it is OOD → success ~0 by design. The video proves
+# "π0.5 → 16-joint OpenArm bimanual motion in Isaac Lab sim". Honest label, no fabricated success.
+# Source of truth for the integration contract:
+#   research/pai/innovation-hub-apj/pi05-openarm-sim-integration-spike-2026-06-04.md
+#
+# Local mode ONLY (no bridge): inference runs in-process via LeRobot PI05Policy on the same GPU
+# as the sim (unlike gr00t/pi which have a separate policy server). The driver bypasses
+# `lerobot-eval`'s HF-Hub env download — it calls our local env.py:make_env directly.
+
+model:
+  id: openarm-isaac
+
+  # ── π0.5 checkpoint (LeRobot pi05 PyTorch port; openpi NOT used) ──────────────────────────────
+  # 16-DOF bimanual, state/action dim=16, chunk_size=30, num_inference_steps=10, bf16.
+  # Cameras (must match env_cfg term names): observation.images.{base,left_wrist,right_wrist}.
+  hf_repo: "lerobot/folding_latest"
+  # Pinned to main HEAD as of 2026-06-05 (single `main` branch, no tags; lastModified 2026-06-03).
+  # config.json @ this sha verified: type=pi05, observation.state[16], action[16],
+  # cameras observation.images.{base,left_wrist,right_wrist} — exact match to env_cfg term names.
+  hf_model_revision: "a53a72876215dd19b3bf63fb5f4d7aa56387cf2a"
+
+  # ── enactic/openarm_isaac_lab (the bimanual sim chassis; overlay applied on top) ──────────────
+  # github.com/enactic/openarm_isaac_lab — only bimanual OpenArm sim with verified articulation.
+  openarm_isaac_commit: "bad82e2"                                    # Validated clone HEAD: 2026-06-04
+
+  # ── LeRobot (pi05 inference stack + rollout/eval reuse) ───────────────────────────────────────
+  # github.com/huggingface/lerobot — the driver reuses rollout()/eval_policy + IsaaclabArena
+  # processor path. Pin to the HEAD whose source the Phase 2 contract was line-cite verified against.
+  lerobot_commit: "d1b1c5c"                                          # Validated: 2026-06-04 (HEAD)
+
+  # ── Isaac Sim / Isaac Lab (NGC container — pins all three: IsaacSim 5.1 + Lab 2.3 + Py3.11) ───
+  # README mandates this exact combo. We use the official NGC Docker image instead of pip-installing
+  # Isaac Sim (EULA + CUDA toolchain on a bare DLAMI is brittle); the image bundles a matched stack.
+  isaac_lab_image: "nvcr.io/nvidia/isaac-lab:2.3.0"                  # IsaacSim 5.1.0 + IsaacLab 2.3.0 + Py3.11
+
+instance:
+  # Isaac Sim 5.1 + --enable_cameras render is heavy; needs a real (Ampere+) GPU with ample VRAM.
+  # 12xlarge tier mirrors gr00t-gr1 (render-bound). xlarge fallbacks kept for capacity flexibility.
+  preferred: [g6.12xlarge, g5.12xlarge, g6.2xlarge, g5.2xlarge]
+  # Isaac Lab container image (~20-30 GB) + extracted layers + folding_latest ckpt + lerobot venv.
+  ebs_gb: 500
+  # Docker pull (large image) ~20-30min + sim boot + single short rollout. No model server warmup.
+  creationpolicy_timeout: PT240M
+
+# Single task: empty bimanual Reach scene, pipe-proof rollout.
+# state_keys ORDER defines the 16-dim layout consumed by IsaaclabArenaProcessorStep:
+#   [R_arm(7), R_grip(1), L_arm(7), L_grip(1)] — matches folding_latest's [R_j1..7,R_grip,L_j1..7,L_grip].
+# camera_keys MUST equal folding_latest config.image_features term names.
+tasks:
+  - name: openarm-bi-reach-pipeproof
+    task: "fold the cloth"                                          # folding policy prompt (OOD on empty Reach; pipe-proof only)
+    state_keys: "right_arm_pos,right_gripper_pos,left_arm_pos,left_gripper_pos"
+    camera_keys: "base,left_wrist,right_wrist"
+    state_dim: 16
+    action_dim: 16
+    camera_height: 224
+    camera_width: 224
+    episode_length: 150                                             # ~5s @ 30Hz demo clip (stock Reach is ~720 steps)
+    n_episodes: 1
+    max_episodes_rendered: 1
+    device: "cuda:0"
+    seed: 1000
+
+# No bridge mode — local in-process inference only (LeRobot pi05 on the sim GPU).

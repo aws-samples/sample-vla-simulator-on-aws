@@ -1,0 +1,18 @@
+assets/userdata/*.sh
+cdk/node_modules/
+cdk/cdk.out/
+cdk/cdk.out-*/
+cdk.out/
+cdk.out-*/
+cdk/*.d.ts
+cdk/bin/*.js
+cdk/lib/*.js
+cdk/test/*.js
+__pycache__/
+*.pyc
+.venv/
+.temp/
+
+# CDK context cache — may embed account id / AZ lookups; never commit (regenerated on synth)
+cdk.context.json
+cdk/cdk.context.json

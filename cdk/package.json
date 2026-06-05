@@ -1,0 +1,29 @@
+{
+  "name": "vla-simulator-cdk",
+  "version": "0.1.0",
+  "bin": {
+    "cdk": "bin/cdk.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w",
+    "test": "jest",
+    "cdk": "cdk"
+  },
+  "devDependencies": {
+    "@types/jest": "^30",
+    "@types/node": "^24.10.1",
+    "aws-cdk": "2.1115.0",
+    "jest": "^30",
+    "ts-jest": "^29",
+    "ts-node": "^10.9.2",
+    "typescript": "~5.9.3"
+  },
+  "dependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "aws-cdk-lib": "^2.245.0",
+    "cdk-nag": "^2.37.55",
+    "constructs": "^10.5.0",
+    "js-yaml": "^4.1.1"
+  }
+}

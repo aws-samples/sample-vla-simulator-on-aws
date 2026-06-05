@@ -1,0 +1,35 @@
+# π0.5 (openpi) model configuration
+# Reference: https://github.com/Physical-Intelligence/openpi
+
+model:
+  id: pi
+  version: "0.5"
+  # openpi_commit: git ls-remote https://github.com/Physical-Intelligence/openpi.git HEAD
+  openpi_commit: "650c5b0283a49c42784fb5055a0507da2c6d347d"  # Pinned 2026-04-18
+
+instance:
+  preferred: [g5.xlarge, g5.2xlarge, g6.xlarge, g6.2xlarge]
+  ebs_gb: 200
+  ebs_gb_bridge: 100  # Bridge mode: no checkpoint download — Docker images ~10GB + bridge ~1GB
+  creationpolicy_timeout: PT240M  # install ~30min + 2 suites × 90min + buffer
+
+tasks:
+  - suite: libero_spatial
+    num_episodes: 10
+    description: "LIBERO Spatial (10 tasks × 10 episodes)"
+
+  - suite: libero_object
+    num_episodes: 5
+    description: "LIBERO Object (10 tasks × 5 episodes)"
+
+# Available suites: libero_spatial, libero_object, libero_goal, libero_100
+# Expected performance (pi05_libero, arXiv:2504.16054):
+#   libero_spatial: ~85-95%
+#   libero_object: ~80-90%
+#   libero_goal: ~75-85%
+
+# Bridge mode — vla-hub ECS NLB endpoint (leave empty for local mode)
+# Values from VlaHubStack CloudFormation outputs (VpcId, Pi05GrpcEndpoint)
+bridge:
+  vpc_id: ""       # e.g. vpc-0e6952afa316c1971
+  nlb_endpoint: "" # e.g. internal-xxx.elb.us-east-1.amazonaws.com:50052

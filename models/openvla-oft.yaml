@@ -1,0 +1,88 @@
+# OpenVLA-OFT (Optimized Fine-Tuning) model configuration
+# Paper: "Fine-Tuning Vision-Language-Action Models: Optimizing Speed and Success"
+#        arXiv:2502.19645 (Kim et al., 2025)
+# Repo:  https://github.com/moojink/openvla-oft (MIT)
+# Goal:  LIBERO {Spatial, Object, Goal, Long(10)} evaluation with 1-click deploy on AWS
+#
+# CLI:   python deploy.py --vla openvla-oft --libero-suite {spatial|object|goal|10|long}
+#        (default: 10; alias `long` → `10` — OFT 논문 LIBERO-Long = LIBERO-10)
+
+model:
+  id: openvla-oft
+  version: "OFT-LIBERO"
+
+  # Per-suite HF checkpoints — revisions validated 2026-05-04
+  # Source: huggingface.co/api/models/moojink/openvla-7b-oft-finetuned-libero-{suite}
+  suites:
+    spatial:
+      hf_repo: "moojink/openvla-7b-oft-finetuned-libero-spatial"
+      hf_model_revision: "6d0231af0e48c5985f1ff86908f4674b84bc049b"
+      task_suite_name: "libero_spatial"
+      paper_success_rate: 0.976   # OFT paper Table I (wrist+state inputs)
+    object:
+      hf_repo: "moojink/openvla-7b-oft-finetuned-libero-object"
+      hf_model_revision: "4c89574e1c538b6c102f43f0526d60a9d3650148"
+      task_suite_name: "libero_object"
+      paper_success_rate: 0.984
+    goal:
+      hf_repo: "moojink/openvla-7b-oft-finetuned-libero-goal"
+      hf_model_revision: "c2d0f9fbbd82674683b397ff923168a12f6a307b"
+      task_suite_name: "libero_goal"
+      paper_success_rate: 0.979
+    # `10` (quoted so YAML keeps it as string key)
+    # Alias: `long` → normalised to `10` in generate.py
+    "10":
+      hf_repo: "moojink/openvla-7b-oft-finetuned-libero-10"
+      hf_model_revision: "95220f9a3421a7ff12d4218e73d09ade830fa9a3"
+      task_suite_name: "libero_10"
+      paper_success_rate: 0.945
+
+  # Suite-common pins (apply to all suites)
+  # git ls-remote https://github.com/moojink/openvla-oft.git HEAD
+  oft_commit: "e4287e94541f459edc4feabc4e181f537cd569a8"          # Validated: 2026-05-04
+  # git ls-remote https://github.com/moojink/transformers-openvla-oft.git HEAD
+  transformers_fork_commit: "bc339d9ad707454c0c115970db43c260067c61ab"  # Validated: 2026-05-04
+  # LIBERO upstream — pinned commit (repo rarely updated; master)
+  libero_commit: "master"
+  # Evaluation flags (align with paper defaults)
+  center_crop: true
+
+# Per-suite runtime profile — instance/EBS common, timeout differs because LIBERO-10
+# (long-horizon) takes ~3× longer than short-horizon suites (spatial/object/goal).
+instance:
+  preferred: [g6.xlarge, g5.xlarge, g6.2xlarge, g5.2xlarge]  # ~16GB VRAM sufficient; L4/A10G both OK
+  ebs_gb: 250                     # 7B checkpoint ~15GB + flash-attn build + conda env + videos
+  ebs_gb_bridge: 250              # bridge not yet supported — same value
+  # CreationPolicy timeout per suite (used by CDK stack)
+  creationpolicy_timeout:
+    spatial: PT120M   # install ~35 + eval ~30-45 + buffer
+    object:  PT120M
+    goal:    PT120M
+    "10":    PT240M   # long-horizon: install ~35 + eval ~90-180 + buffer (existing default)
+
+# Evaluation tasks — structure differs from gr00t (env_name) / pi (suite+num_episodes).
+# openvla-oft's run_libero_eval.py iterates all tasks in a suite, so we model suite-level eval.
+# `generate.py --libero-suite X` picks the matching entry and passes it to the Jinja template.
+tasks:
+  spatial:
+    - suite: libero_spatial
+      num_trials_per_task: 5          # 10 tasks × 5 trials = 50 trials (~30-45min on L4)
+      description: "LIBERO-Spatial (10 tasks × 5 trials)"
+  object:
+    - suite: libero_object
+      num_trials_per_task: 5
+      description: "LIBERO-Object (10 tasks × 5 trials)"
+  goal:
+    - suite: libero_goal
+      num_trials_per_task: 5
+      description: "LIBERO-Goal (10 tasks × 5 trials)"
+  "10":
+    - suite: libero_10
+      num_trials_per_task: 5          # PoC: 5/task × 10 tasks = 50 trials (~90-180min on L4)
+      description: "LIBERO-10 long-horizon (10 tasks × 5 trials)"
+      # Full paper: num_trials_per_task=50 (500 trials total) takes >10h on single GPU.
+
+# Bridge mode not supported in initial version.
+# OpenVLA-OFT client/server split would require a vla-hub Docker image — deferred.
+bridge:
+  enabled: false

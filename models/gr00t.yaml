@@ -1,0 +1,48 @@
+# GR00T N1.7 model configuration
+# Using fine-tuned checkpoint for LIBERO simulation (base model does not support LIBERO_PANDA)
+# Reference: https://huggingface.co/nvidia/GR00T-N1.7-LIBERO
+
+model:
+  id: gr00t
+  version: "N1.7-LIBERO"
+  hf_repo: "nvidia/GR00T-N1.7-LIBERO"
+  hf_subfolder: "libero_10"                                         # libero_10 suite (long-horizon tasks)
+  # Version pinning — update when intentionally upgrading
+  # isaac_groot_commit: git ls-remote https://github.com/NVIDIA/Isaac-GR00T.git HEAD
+  isaac_groot_commit: "4b1dca9d88d2a0b9ea5a65aa61c82ff89f5c4f0e"  # N1.7: 2026-04-25
+  # uv: https://github.com/astral-sh/uv/releases/latest
+  uv_version: "0.11.6"                                            # Validated: 2026-04-10
+  # hf_model_revision: nvidia/GR00T-N1.7-LIBERO main SHA
+  hf_model_revision: "2ea293aa20ba7cf5bbf3ba17a5fbcb1a01cbfe21"   # N1.7-LIBERO: 2026-04-26
+
+instance:
+  preferred: [g6.12xlarge, g5.12xlarge, g6.xlarge, g5.xlarge]
+  ebs_gb: 400
+  ebs_gb_bridge: 400  # Bridge mode: still needs sim env (no model download saving)
+  creationpolicy_timeout: PT180M  # install ~30min + sim ~90min + buffer
+
+tasks:
+  - env_name: libero_sim/KITCHEN_SCENE3_turn_on_the_stove_and_put_the_moka_pot_on_it
+    embodiment: LIBERO_PANDA
+    n_episodes: 5
+    n_envs: 1
+    max_episode_steps: 720
+    video_fps: 30
+    video_crf: 18
+    steps_per_render: 1
+
+  - env_name: libero_sim/KITCHEN_SCENE4_put_the_black_bowl_in_the_bottom_drawer_of_the_cabinet_and_close_it
+    embodiment: LIBERO_PANDA
+    n_episodes: 3
+    n_envs: 1
+    max_episode_steps: 720
+    video_fps: 20
+    video_crf: 22
+    steps_per_render: 2
+
+# Bridge mode — vla-hub ECS gRPC endpoint (leave empty for local mode)
+# Set via SSM: ssm:/vla-hub/gr00t/n1-7/grpc-endpoint
+# Or set directly:  remote_grpc_endpoint: "internal-xxx.elb.amazonaws.com:50051"
+bridge:
+  remote_grpc_endpoint: "ssm:/vla-hub/gr00t/n1-7/grpc-endpoint"  # auto-resolved from SSM
+  vpc_id: "ssm:/vla-hub/vpc-id"                                   # auto-resolved from SSM
