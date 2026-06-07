@@ -1,0 +1,49 @@
+syntax = "proto3";
+
+package lap;
+
+// LAP-3B (Language-Action Pre-Training) realtime inference service.
+// Backbone: PaliGemma-3B + Flow Matching action expert (JAX, built on openpi).
+// Repo: github.com/lihzha/lap (Apache-2.0). Checkpoint: lihzha/LAP-3B-Libero.
+service LAPInference {
+  // 로봇 관절 액션 추론 (action chunk 반환)
+  rpc Infer (InferRequest) returns (InferResponse);
+  // 서버 / 모델 로드 상태 확인
+  rpc Health (HealthRequest) returns (HealthResponse);
+}
+
+message InferRequest {
+  // 이미지: 두 카메라 뷰 (LAP LIBERO 키 매핑 — model_adapter.py IMAGE_KEYS)
+  //   base_image  → observation.base_0_rgb        (third-person view)
+  //   wrist_image → observation.left_wrist_0_rgb  (eye-in-hand)
+  // JPEG/PNG raw bytes, 서버에서 224x224 RGB로 리사이즈
+  bytes  base_image  = 1;
+  bytes  wrist_image = 2;
+
+  // 자연어 태스크 지시 (예: "pick up the black bowl between the plate and the ramekin")
+  string instruction = 3;
+
+  // 로봇 상태 10-dim: eef_pos(3) + eef_rot6d(6) + gripper(1)
+  // 주의: LAP LIBERO는 6D 회전(쿼터니언 아님)을 쓰므로 10-dim — π0.5의 8-dim과 다름.
+  // optional — 미입력 시 10-dim zero 패딩.
+  repeated float state = 4;
+
+  // optional CoT reasoning 힌트. flow 정책은 빈 문자열을 무시 (CoT 설정만 사용).
+  string frame_description = 5;
+}
+
+message InferResponse {
+  // actions: float32 row-major bytes, shape = (chunk_length=10, action_dim=7)
+  // 복원: np.frombuffer(actions, dtype=np.float32).reshape(chunk_length, action_dim)
+  bytes actions = 1;
+
+  // {"chunk_length": 10, "action_dim": 7}
+  map<string, int32> shape_info = 2;
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  bool healthy      = 1;  // 서버 구동 중
+  bool model_loaded = 2;  // LAP 정책 로드 완료 여부
+}

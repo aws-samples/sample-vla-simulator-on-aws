@@ -30,6 +30,10 @@ STACK_NAME="${StackName}"
 WAIT_CONDITION_URL="${WaitConditionUrl}"
 REGION="${Region}"
 AUTO_TERMINATE="${AutoTerminate}"
+# Bridge mode: forward inference to a remote vla-hub LAP gRPC endpoint instead of
+# running LAP locally. Empty/false → local mode (serve_policy.py + checkpoint).
+BRIDGE_MODE="${BridgeMode}"
+NLB_ENDPOINT="${NlbEndpoint}"
 
 # UserData runs as root; HOME must be set so uv puts caches in a stable place.
 export HOME=/root
@@ -92,7 +96,7 @@ _trap_handler() {
 }
 trap '_trap_handler' ERR
 
-# Stop server on script exit (success or failure)
+# Stop server / bridge on script exit (success or failure)
 SERVER_PID=""
 _cleanup_server() {
     if [ -n "${SERVER_PID}" ] && kill -0 "${SERVER_PID}" 2>/dev/null; then
@@ -100,6 +104,10 @@ _cleanup_server() {
         kill "${SERVER_PID}" 2>/dev/null || true
         sleep 2
         kill -9 "${SERVER_PID}" 2>/dev/null || true
+    fi
+    # Bridge mode: stop the gRPC bridge container if present (no-op in local mode).
+    if [ "${BRIDGE_MODE}" = "true" ]; then
+        docker rm -f lap-grpc-bridge 2>/dev/null || true
     fi
 }
 trap '_cleanup_server' EXIT
@@ -248,6 +256,10 @@ log "  LAP commit: ${ACTUAL_COMMIT}"
 # ── [4/7] LAP main venv (Py3.11 + JAX[cuda12]) ────────────────────
 # `uv sync --group cuda` provisions Python 3.11, jax[cuda12]==0.5.3, flax, transformers, etc.
 # GIT_LFS_SKIP_SMUDGE=1 is precautionary — LAP repo has no LFS, but transitive deps may.
+# Bridge mode: SKIP — the LAP JAX model runs on the remote vla-hub ECS task, not here.
+if [ "${BRIDGE_MODE}" = "true" ]; then
+    log "[4/7] Bridge mode: skipping LAP main venv (JAX model served remotely)."
+else
 log "[4/7] Provisioning LAP main venv (uv sync --group cuda, ~10-15min)..."
 cd "${LAP_DIR}"
 GIT_LFS_SKIP_SMUDGE=1 uv sync --group cuda 2>&1 | tee /tmp/lap_uv_sync.log \
@@ -264,6 +276,7 @@ print('jax devices:', jax.devices())
 assert any(d.platform == 'gpu' for d in jax.devices()), 'No GPU device visible to JAX'
 " 2>&1 | tee /tmp/lap_jax_check.log \
     || die "JAX GPU check failed (see /tmp/lap_jax_check.log)"
+fi
 
 # ── [5/7] LIBERO sim venv (Py3.8 + cu113 PyTorch CPU-only) ────────
 # LIBERO sim requires Python 3.8 + numpy 1.22.4 + mujoco 3.2.3, conflicting with the LAP main
@@ -360,7 +373,31 @@ grep -q 'obs\["robot0_eye_in_hand_image"\]\[::-1, ::-1\]' "${LAP_MAIN_PY}" \
     || die "agentview_image old form still present after patch"
 log "  main.py image flip patched (vertical+horizontal flip)"
 
+# ── [5/7b] Patch main.py invert_and_scale_gripper: read-only action array ──
+# BRIDGE MODE BUG: in bridge/websocket mode the action chunk arrives over the
+# wire and openpi_client.msgpack_numpy.unpack_array rebuilds it via
+# `np.ndarray(buffer=<bytes>, ...)` — bytes are immutable, so the array is
+# WRITEABLE=False. main.py line 156 does `np.asarray(response["actions"],
+# dtype=np.float32)`; since the dtype already matches, np.asarray returns the
+# read-only view (no copy), and invert_and_scale_gripper() then does in-place
+# `action_chunk[:, -1:] = ...` → "assignment destination is read-only", which
+# main.py's per-episode try/except swallows → every episode fails, 0 videos,
+# success_rate 0.0. (Local mode never hits this: the in-process policy returns a
+# writeable array.) Fix: make invert_and_scale_gripper copy its input to a
+# writeable array. Idempotent (only inserts if the copy line is absent).
+if ! grep -q 'action_chunk = np.array(action_chunk)  # writeable copy' "${LAP_MAIN_PY}"; then
+    sed -i 's|^def invert_and_scale_gripper(action_chunk):|def invert_and_scale_gripper(action_chunk):\n    action_chunk = np.array(action_chunk)  # writeable copy (bridge: wire array is read-only)|' "${LAP_MAIN_PY}" \
+        || die "sed patch (invert_and_scale_gripper read-only) failed"
+fi
+grep -q 'action_chunk = np.array(action_chunk)  # writeable copy' "${LAP_MAIN_PY}" \
+    || die "invert_and_scale_gripper read-only patch verification failed"
+log "  main.py invert_and_scale_gripper patched (writeable action copy)"
+
 # ── [6/7] HF checkpoint download ───────────────────────────────────
+# Bridge mode: SKIP — the checkpoint is baked into the remote vla-hub LAP image.
+if [ "${BRIDGE_MODE}" = "true" ]; then
+    log "[6/7] Bridge mode: skipping HF checkpoint download (served remotely)."
+else
 mkdir -p "${LAP_CKPT_DIR}"
 {% if hf_model_revision %}
 log "[6/7] Downloading HF checkpoint {{ hf_repo }} (rev {{ hf_model_revision[:8] }})..."
@@ -385,12 +422,75 @@ print('checkpoint downloaded to:', path)
 " 2>&1 | tee /tmp/lap_hf_download.log \
     || die "HF checkpoint download failed"
 {% endif %}
+fi
 
-# ── [7/7] Start policy server, then run LIBERO eval per task ──────
+# ── [7/7] Start policy server (or bridge), then run LIBERO eval per task ──────
 export MUJOCO_GL=egl
 export PYOPENGL_PLATFORM=egl
 mkdir -p "${VIDEO_BASE_DIR}" "${RESULTS_BASE_DIR}"
 
+if [ "${BRIDGE_MODE}" = "true" ]; then
+    # ── Bridge mode: build + run lap_grpc_bridge container (binds port 8000) ──
+    # LAP's LIBERO client (openpi_client.WebsocketClientPolicy) connects to
+    # ws://localhost:8000 just like local mode — but the bridge forwards each
+    # inference to the remote vla-hub LAP gRPC NLB instead of a local model.
+    [ -n "${NLB_ENDPOINT}" ] || die "Bridge mode but NLB_ENDPOINT empty"
+    log "[7/7] Bridge mode: building lap_grpc_bridge image (NLB: ${NLB_ENDPOINT})..."
+    BRIDGE_DIR=/home/ubuntu/lap-bridge
+    mkdir -p "${BRIDGE_DIR}"
+    cat > "${BRIDGE_DIR}/lap.proto" << 'PROTO_EOF'
+{{ lap_proto }}
+PROTO_EOF
+    cat > "${BRIDGE_DIR}/lap_grpc_bridge.py" << 'BRIDGE_EOF'
+{{ lap_grpc_bridge_py }}
+BRIDGE_EOF
+    cat > "${BRIDGE_DIR}/requirements.txt" << 'REQ_EOF'
+grpcio>=1.60.0
+grpcio-tools>=1.60.0
+msgpack>=1.0.0
+msgpack-numpy>=0.4.8
+numpy>=1.24.0
+websockets>=12.0
+Pillow>=10.0.0
+REQ_EOF
+    cat > "${BRIDGE_DIR}/Dockerfile" << 'BRIDGE_DOCKERFILE_EOF'
+FROM python:3.11-slim
+WORKDIR /bridge
+RUN apt-get update && apt-get install -y --no-install-recommends gcc && rm -rf /var/lib/apt/lists/*
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY lap.proto .
+RUN python -m grpc_tools.protoc -I. --python_out=. --grpc_python_out=. lap.proto
+COPY lap_grpc_bridge.py .
+EXPOSE 8000
+ENV NLB_ENDPOINT=""
+ENTRYPOINT ["/bin/sh", "-c", "exec python lap_grpc_bridge.py --endpoint \"${NLB_ENDPOINT}\" --port 8000"]
+BRIDGE_DOCKERFILE_EOF
+
+    docker build -t lap-grpc-bridge "${BRIDGE_DIR}" 2>&1 | tee /tmp/lap_bridge_build.log \
+        || die "lap_grpc_bridge Docker build failed"
+
+    log "  Starting lap_grpc_bridge container (NLB: ${NLB_ENDPOINT})..."
+    docker run -d --name lap-grpc-bridge \
+        --network host \
+        -e NLB_ENDPOINT="${NLB_ENDPOINT}" \
+        lap-grpc-bridge 2>&1 | tee /tmp/lap_bridge_run.log \
+        || die "lap_grpc_bridge container start failed"
+
+    log "  Waiting for bridge WebSocket (port 8000)..."
+    BRIDGE_WAIT=0
+    while ! nc -z localhost 8000 2>/dev/null; do
+        sleep 5
+        BRIDGE_WAIT=$((BRIDGE_WAIT + 5))
+        if [ ${BRIDGE_WAIT} -ge 180 ]; then
+            docker logs lap-grpc-bridge 2>&1 | tee -a /var/log/lap-userdata.log
+            aws s3 cp /tmp/lap_bridge_build.log "s3://${S3_BUCKET}/${RUN_ID}/diag-fail/lap_bridge_build.log" \
+                --region "$REGION" 2>/dev/null || true
+            die "lap_grpc_bridge did not bind port 8000 within 180s"
+        fi
+    done
+    log "  Bridge ready (${BRIDGE_WAIT}s) — forwarding to ${NLB_ENDPOINT}"
+else
 # Start serve_policy.py once — it handles all LIBERO suites under policy_config={{ policy_config }}.
 log "[7/7] Starting LAP policy server (background, port 8000)..."
 cd "${LAP_DIR}"
@@ -436,6 +536,7 @@ if [ "${SERVER_OK}" != true ]; then
     die "policy server did not bind port 8000 within ${SERVER_TIMEOUT}s (see /tmp/lap_server.log + diag-fail/)"
 fi
 log "  Policy server ready (${SERVER_WAIT}s)"
+fi
 
 TASKS_JSON='{{ tasks_json }}'
 TASK_COUNT=$(echo "$TASKS_JSON" | jq length)

@@ -223,7 +223,7 @@ The S3 results bucket is **retained** after stack deletion to preserve simulatio
 | `gr00t-gr1` | PnPCanToDrawerClose (GR1) | 0% (pre-trained N1.6 not supported) | validated 2026-04-12 |
 | `pi` | libero_object | ~80–94% | validated 2026-04-27 |
 | `pi` | libero_spatial | ~85–95% | validated 2026-04-27 |
-| `openvla-oft --libero-suite spatial` | libero_spatial | 97.6% (paper Table I) | pending smoke test |
+| `openvla-oft --libero-suite spatial` | libero_spatial | 97.6% (paper Table I) | validated 2026-06-01 — 0.92 (46/50, 5 trials/task × 10 tasks, g6.xlarge); within paper ±5%p band at n=50 |
 | `openvla-oft --libero-suite object` | libero_object | 98.4% (paper Table I) | pending smoke test |
 | `openvla-oft --libero-suite goal` | libero_goal | 97.9% (paper Table I) | pending smoke test |
 | `openvla-oft --libero-suite 10` | libero_10 (long-horizon) | 94.5% (paper Table I) | validated 2026-05-04 |
@@ -234,6 +234,7 @@ The S3 results bucket is **retained** after stack deletion to preserve simulatio
 - GR00T N1.6 + GR1: PosttrainPnP = 0.8 (4/5), PnPCanToDrawer = 0.0 (pre-trained model limitation)
 - π0.5: libero_object = 0.94 (47/50)
 - OpenVLA-OFT: libero_10 = 1.0 (10/10 at 1 trial/task, g6.xlarge)
+- OpenVLA-OFT: libero_spatial = 0.92 (46/50, 5 trials/task × 10 tasks, g6.xlarge) — paper Table I = 97.6%; the gap (5.6%p) is within sampling noise at n=50 (SE ≈ 3.8%p). 8/10 tasks at 5/5; misses concentrated on `on_the_ramekin` (2/5) and `next_to_the_plate` (4/5)
 - LAP-3B: libero_spatial = 0.98 (49/50, 5 trials/task × 10 tasks, g6.xlarge) — exceeds paper Table III range (85–95%); requires upstream `scripts/libero/main.py` vertical-flip patch (see `templates/lap-userdata.sh.j2`)
 
 ---
@@ -298,7 +299,8 @@ vla-simulator/
 │   ├── userdata/             # Generated scripts (gitignored)
 │   └── bridge/
 │       ├── gr00t/            # ZMQ-gRPC bridge for GR00T
-│       └── pi/               # gRPC bridge for π0.5
+│       ├── pi/               # gRPC bridge for π0.5
+│       └── lap/              # WebSocket↔gRPC bridge for LAP-3B (port 50055)
 └── templates/
     ├── gr00t-userdata.sh.j2        # Jinja2 template for GR00T UserData
     ├── gr00t-gr1-userdata.sh.j2    # GR00T N1.6 + GR1 humanoid
@@ -332,6 +334,26 @@ python deploy.py --vla gr00t --bridge
 
 python deploy.py --vla pi --bridge
 ```
+
+### LAP-3B bridge
+
+LAP shares π0.5's openpi WebSocket bridge pattern. The instance runs only the LIBERO
+sim + a WebSocket↔gRPC bridge (`assets/bridge/lap/`); the LAP-3B JAX model runs on the
+remote vla-hub LAP ECS task (port 50055). No local checkpoint download.
+
+```bash
+# Set in models/lap.yaml (or use ssm: for nlb_endpoint):
+#   bridge.vpc_id: vpc-xxxxxxxxxxxxxxxxx                       # the vla-hub VPC
+#   bridge.nlb_endpoint: internal-xxx.elb.us-west-2.amazonaws.com:50055
+#                        or ssm:/vla-hub/lap/3b/grpc-endpoint
+
+python deploy.py --vla lap --bridge
+```
+
+> Bridge differs from π0.5 only in the wire contract: LAP uses a nested observation
+> (`observation.base_0_rgb` / `left_wrist_0_rgb` / `state`), a 10-dim state
+> (eef_pos 3 + eef_rot6d 6 + gripper 1), a `frame_description` field, and a (10,7)
+> action chunk — see `assets/bridge/lap/lap.proto`.
 
 ---
 

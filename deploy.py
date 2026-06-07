@@ -203,10 +203,6 @@ def main():
         if args.vla == "openvla-oft":
             print("[error] Bridge mode not supported for openvla-oft (local only).", file=sys.stderr)
             sys.exit(1)
-        if args.vla == "lap":
-            print("[error] Bridge mode not yet supported for lap (local only — vla-hub LAP server is a follow-up).",
-                  file=sys.stderr)
-            sys.exit(1)
         if args.vla == "openarm-isaac":
             print("[error] Bridge mode not supported for openarm-isaac (local only — LeRobot pi05 runs in-process on the sim GPU).",
                   file=sys.stderr)
@@ -224,12 +220,12 @@ def main():
             safe_vpc = _validate_vpc_id(vpc_id)
             extra_cdk_ctx = ["-c", f"vpc_id={safe_vpc}"]
             generate_extra = ["--resolved-grpc", resolved_grpc, "--resolved-vpc", resolved_vpc]
-        else:  # pi
+        else:  # pi, lap — both use NLB endpoint + openpi WebSocket bridge
             raw_vpc = str(bridge_cfg.get("vpc_id", "")).strip()
             raw_nlb = str(bridge_cfg.get("nlb_endpoint", "")).strip()
             if not raw_vpc or not raw_nlb:
-                print("[error] Bridge mode requires bridge.vpc_id and bridge.nlb_endpoint "
-                      "in models/pi.yaml", file=sys.stderr)
+                print(f"[error] Bridge mode requires bridge.vpc_id and bridge.nlb_endpoint "
+                      f"in models/{args.vla}.yaml", file=sys.stderr)
                 sys.exit(1)
             resolved_vpc = _resolve_ssm(raw_vpc, region)
             resolved_nlb = _resolve_ssm(raw_nlb, region) if raw_nlb.startswith("ssm:") else raw_nlb

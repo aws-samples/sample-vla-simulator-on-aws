@@ -261,7 +261,8 @@ export class VlaSimulatorStack extends cdk.Stack {
       AutoTerminate:    autoTerminate ? 'true' : 'false',
     };
 
-    if (vla === 'pi') {
+    if (vla === 'pi' || vla === 'lap') {
+      // pi & lap both run the openpi WebSocket↔gRPC bridge in bridge mode.
       baseBootstrapLines.push(
         'export BridgeMode="${BridgeMode}"',
         'export NlbEndpoint="${NlbEndpoint}"',
@@ -324,7 +325,7 @@ export class VlaSimulatorStack extends cdk.Stack {
       value: notifyEmail,
       description: 'Completion notification email address',
     });
-    if (vla === 'pi') {
+    if (vla === 'pi' || vla === 'lap') {
       new cdk.CfnOutput(this, 'Mode', {
         value: bridgeMode ? `bridge (NLB: ${nlbEndpoint})` : 'local',
         description: 'Deployment mode: local (Docker Compose) or bridge (gRPC NLB)',

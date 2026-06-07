@@ -155,7 +155,7 @@ def generate_openvla_oft(config: dict, libero_suite: str, dry_run: bool) -> str:
     return env.get_template("openvla-oft-userdata.sh.j2").render(**ctx)
 
 
-def generate_lap(config: dict, dry_run: bool) -> str:
+def generate_lap(config: dict, resolved_nlb: str, dry_run: bool) -> str:
     tasks = config.get("tasks", [])
     if not tasks:
         print("[error] models/lap.yaml에 tasks 항목이 없습니다.", file=sys.stderr)
@@ -165,6 +165,12 @@ def generate_lap(config: dict, dry_run: bool) -> str:
     deployment = config.get("deployment", {})
     model = config.get("model", {})
 
+    # Bridge assets (embedded into UserData as heredoc — same pattern as generate_pi).
+    # Empty strings render harmless heredocs in local mode (BRIDGE_MODE=false skips them).
+    bridge_dir = BASE_DIR / "assets" / "bridge" / "lap"
+    lap_proto_path = bridge_dir / "lap.proto"
+    lap_grpc_bridge_path = bridge_dir / "lap_grpc_bridge.py"
+
     ctx = {
         "tasks_json": tasks_json,
         "deployment": deployment,
@@ -173,6 +179,8 @@ def generate_lap(config: dict, dry_run: bool) -> str:
         "hf_model_revision": model.get("hf_model_revision", ""),
         "policy_config": model.get("policy_config", "lap_libero"),
         "policy_type": model.get("policy_type", "flow"),
+        "lap_proto": lap_proto_path.read_text() if lap_proto_path.exists() else "",
+        "lap_grpc_bridge_py": lap_grpc_bridge_path.read_text() if lap_grpc_bridge_path.exists() else "",
     }
 
     env = Environment(loader=FileSystemLoader(str(TEMPLATES_DIR)), keep_trailing_newline=True)  # nosec B701 - shell script template
@@ -284,7 +292,7 @@ def main():
     elif args.vla == "openvla-oft":
         rendered = generate_openvla_oft(config, args.libero_suite, args.dry_run)
     elif args.vla == "lap":
-        rendered = generate_lap(config, args.dry_run)
+        rendered = generate_lap(config, args.resolved_nlb, args.dry_run)
     elif args.vla == "openarm-isaac":
         rendered = generate_openarm_isaac(config, args.dry_run)
     else:

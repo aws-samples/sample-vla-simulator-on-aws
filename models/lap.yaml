@@ -32,8 +32,8 @@ model:
 instance:
   # 24GB VRAM sufficient (paper: RTX 4090 @ 25Hz, ~12-16GB used)
   preferred: [g6.xlarge, g6.2xlarge, g5.xlarge, g5.2xlarge]
-  ebs_gb: 200          # checkpoint ~12GB + repo+venvs ~15GB + videos + buffer
-  ebs_gb_bridge: 100   # bridge mode: not yet supported
+  ebs_gb: 200          # local mode: checkpoint ~12GB + repo+venvs ~15GB + videos + buffer
+  ebs_gb_bridge: 100   # bridge mode: no local checkpoint — only LIBERO sim venv + videos
   # Initial smoke test: conservative. Reduce to PT150M after first successful run.
   creationpolicy_timeout: PT180M   # install ~25-30 + checkpoint ~10 + eval ~30-50 + buffer
 
@@ -45,6 +45,12 @@ tasks:
     num_trials_per_task: 5
     description: "LIBERO-Spatial (10 tasks × 5 trials) — smoke test"
 
-# Bridge mode not yet supported — vla-hub LAP server is a follow-up session.
+# Bridge mode — forward inference to a deployed vla-hub LAP gRPC endpoint (port 50055)
+# instead of running LAP locally. The EC2 instance runs only the LIBERO sim + a
+# WebSocket↔gRPC bridge (assets/bridge/lap/), no local checkpoint download.
+#   python deploy.py --vla lap --bridge
+# nlb_endpoint accepts a literal host:port or ssm:/path (vla-hub publishes
+#   /vla-hub/lap/3b/grpc-endpoint). vpc_id must be the vla-hub VPC (same-VPC NLB).
 bridge:
-  enabled: false
+  vpc_id: ""                               # e.g. vpc-xxxxxxxxxxxxxxxxx — vla-hub VlaHubStack VpcId (leave empty for local mode)
+  nlb_endpoint: "ssm:/vla-hub/lap/3b/grpc-endpoint"  # internal NLB :50055, resolved at deploy (literal host:port or ssm:/path)
