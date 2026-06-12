@@ -14,6 +14,7 @@ generate.py — model yaml + simulator-config.yaml 읽어 assets/userdata/{vla}.
     python generate.py --vla openvla-oft [--config simulator-config.yaml] [--dry-run]
     python generate.py --vla lap         [--config simulator-config.yaml] [--dry-run]
     python generate.py --vla openarm-isaac [--config simulator-config.yaml] [--dry-run]
+    python generate.py --vla openarm-lift-act [--config simulator-config.yaml] [--dry-run]
 """
 
 import argparse
@@ -207,6 +208,9 @@ def generate_openarm_isaac(config: dict, dry_run: bool) -> str:
         "env_py_b64": "env.py",
         "run_eval_py_b64": "run_eval.py",
         "overlay_cfg_b64": "openarm_bi_vla_env_cfg.py",
+        # Rewrites LeRobot @ pin for Python 3.11 (NGC isaac-lab Kit runtime): relaxes the
+        # requires-python gate + converts PEP-695 type syntax. See the asset's docstring.
+        "patch_lerobot_b64": "patch_lerobot_py311.py",
     }
     missing = [fn for fn in asset_files.values() if not (asset_dir / fn).exists()]
     if missing:
@@ -227,6 +231,53 @@ def generate_openarm_isaac(config: dict, dry_run: bool) -> str:
 
     env = Environment(loader=FileSystemLoader(str(TEMPLATES_DIR)), keep_trailing_newline=True)  # nosec B701 - shell script template
     return env.get_template("openarm-isaac-userdata.sh.j2").render(**ctx)
+
+
+def generate_openarm_lift_act(config: dict, dry_run: bool) -> str:
+    """OpenArm-Lift-ACT: teleop-free scripted demo COLLECTION for the unimanual Lift-Cube × ACT env.
+
+    Embeds 2 sibling python assets (overlay env_cfg + collection driver) as base64 so the userdata
+    can materialise them on the instance and mount them into the Isaac Lab container. No LeRobot,
+    no checkpoint, no rollout video — the deliverable is a success-only demo HDF5 uploaded to S3.
+    """
+    model = config.get("model", {})
+    collection = config.get("collection", {})
+    if not collection:
+        print("[error] models/openarm-lift-act.yaml에 collection 항목이 없습니다.", file=sys.stderr)
+        sys.exit(1)
+
+    asset_dir = BASE_DIR / "assets" / "openarm-lift-act"
+    asset_files = {
+        "overlay_cfg_b64": "openarm_uni_lift_act_env_cfg.py",
+        "collect_sm_b64": "collect_demos_sm.py",
+    }
+    missing = [fn for fn in asset_files.values() if not (asset_dir / fn).exists()]
+    if missing:
+        print(f"[error] openarm-lift-act asset 파일 없음: {missing} (assets/openarm-lift-act/ 확인)", file=sys.stderr)
+        sys.exit(1)
+
+    ctx = {
+        "openarm_isaac_commit": model.get("openarm_isaac_commit", ""),
+        "isaac_lab_image": model.get("isaac_lab_image", "nvcr.io/nvidia/isaac-lab:2.3.0"),
+        "task_id": model.get("task_id", "Isaac-Lift-Cube-OpenArm-ACT-v0"),
+        "register_module": model.get(
+            "register_module",
+            "openarm.tasks.manager_based.openarm_manipulation.unimanual.lift.config.openarm_uni_lift_act_env_cfg",
+        ),
+        "collection": {
+            "num_demos": collection.get("num_demos", 5),
+            "num_envs": collection.get("num_envs", 16),
+            "position_threshold": collection.get("position_threshold", 0.01),
+            "max_steps": collection.get("max_steps", 200000),
+            "cam_res": collection.get("cam_res", 224),
+            "task": collection.get("task", "lift the cube"),
+        },
+    }
+    for ctx_key, fname in asset_files.items():
+        ctx[ctx_key] = base64.encodebytes((asset_dir / fname).read_bytes()).decode()
+
+    env = Environment(loader=FileSystemLoader(str(TEMPLATES_DIR)), keep_trailing_newline=True)  # nosec B701 - shell script template
+    return env.get_template("openarm-lift-act-userdata.sh.j2").render(**ctx)
 
 
 def generate_pi(config: dict, resolved_vpc: str, resolved_nlb: str, dry_run: bool) -> str:
@@ -257,7 +308,7 @@ def generate_pi(config: dict, resolved_vpc: str, resolved_nlb: str, dry_run: boo
 
 def main():
     parser = argparse.ArgumentParser(description="vla-simulator UserData 스크립트 생성")
-    parser.add_argument("--vla", required=True, choices=["gr00t", "gr00t-gr1", "pi", "openvla-oft", "lap", "openarm-isaac"], help="VLA 모델")
+    parser.add_argument("--vla", required=True, choices=["gr00t", "gr00t-gr1", "pi", "openvla-oft", "lap", "openarm-isaac", "openarm-lift-act"], help="VLA 모델")
     parser.add_argument(
         "--config", default=str(BASE_DIR / "simulator-config.yaml"),
         help="공통 설정 파일 경로 (기본: simulator-config.yaml)",
@@ -295,6 +346,8 @@ def main():
         rendered = generate_lap(config, args.resolved_nlb, args.dry_run)
     elif args.vla == "openarm-isaac":
         rendered = generate_openarm_isaac(config, args.dry_run)
+    elif args.vla == "openarm-lift-act":
+        rendered = generate_openarm_lift_act(config, args.dry_run)
     else:
         rendered = generate_pi(config, args.resolved_vpc, args.resolved_nlb, args.dry_run)
 

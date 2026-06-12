@@ -90,6 +90,150 @@ INSTANCE_TYPE=$(curl -s -H "X-aws-ec2-metadata-token: $META_TOKEN" \
     "http://169.254.169.254/latest/meta-data/instance-type" 2>/dev/null || echo "unknown")
 log "  Instance: ${INSTANCE_ID} (${INSTANCE_TYPE})"
 
+# ── [0/7] ECC guard: L40S/L4 require ECC disabled for Omniverse/Isaac Sim ──
+# NVIDIA NGC #331666 — Omniverse/Isaac Sim crash when GPU ECC is Enabled (AWS L40S/L4
+# ship ECC=Enabled by default). The 6th deploy (RUN_ID 2026-06-06-0516) reached Isaac Sim
+# first-render and then died with the exact ECC signature documented in
+# knowledge/pai/concepts/deployment/l40s-ecc-omniverse-g6e.md (run.log L160 "ECC is enabled
+# on physical device 0" → ParamBlock-CB-Memory / ERROR_OUT_OF_DEVICE_MEMORY / segfault).
+#
+# DESIGN (10th fix): do NOT read ecc.mode.current at boot. ECC mode lives in the board inforom
+# (persistent) but the driver can only READ it while the GPU is INITIALIZED, and at early boot
+# nothing keeps the GPU initialized long enough (NVIDIA Driver Persistence docs,
+# docs.nvidia.com/deploy/driver-persistence). A short-lived `nvidia-smi` query therefore returns
+# "Unknown" indefinitely — PROVEN across three deploys:
+#   - 7th (2026-06-06-0729): single early query = Unknown → old else branch mis-read it as a
+#     post-reboot resume and SKIPPED the disable; ECC stayed Enabled → first-render crash.
+#   - 8th (2026-06-06-1235): 30×5s queries ALL Unknown → die() (retry alone insufficient).
+#   - 9th (2026-06-06-1305): driver up at attempt 1 AND persistence mode already Enabled, yet
+#     ecc.mode.current STILL Unknown the whole 120s → die(). This REFUTES the persistence-mode
+#     hypothesis: -pm 1 keeping the GPU "initialized" does NOT make the inforom readable here.
+# Since L4/L40S are KNOWN to ship ECC=Enabled (proven twice: 6th crash, 7th SSM read "Enabled,
+# Enabled"), probing is pointless. So: wait for the driver, then UNCONDITIONALLY `nvidia-smi -e 0`
+# + reboot on boot-1. The `ecc-done` marker blocks a re-disable loop. `nvidia-smi -e 0` is a
+# pending-mode WRITE to the inforom (does not require the GPU initialized like a read does) and is
+# fail-loud (`|| die`) so a genuine write failure surfaces immediately instead of a first-render crash.
+#
+# Boot mechanics: EC2 user-data runs only ONCE per instance lifecycle, so boot-2 cannot re-enter
+# this script via cloud-init — a systemd oneshot unit (openarm-isaac-resume.service) re-runs the
+# self-copied script. On boot-2 the ecc-done marker is present and the whole pipeline (apt → pull
+# → docker run) executes once. Pattern: knowledge/tools/userdata-2stage-reboot-pattern.md;
+# reference impl: projects/sample-slam-nav-sim/simulators/isaac_sim/userdata.sh.j2 [0/6].
+#
+# Marker files:
+#   /var/lib/openarm-isaac/ecc-done       — ECC disabled in boot-1, prevents a re-disable loop
+#   /var/lib/openarm-isaac/userdata-done  — full script completed, blocks resume on future reboots
+mkdir -p /var/lib/openarm-isaac
+
+if [ ! -f /var/lib/openarm-isaac/userdata-done ]; then
+    if [ ! -f /var/lib/openarm-isaac/ecc-done ]; then
+        # ── BOOT-1: disable ECC + reboot (no read; enforce desired state) ──
+
+        # ── Stage A: wait for the NVIDIA driver to enumerate GPUs (needed for nvidia-smi -e 0) ──
+        # On a fresh DLAMI the kernel module + GSP firmware load can take a couple of minutes,
+        # especially on multi-GPU instances (g6.12xl = 4× L4). Gate on `nvidia-smi -L` listing a GPU.
+        DRIVER_MAX_ATTEMPTS=60       # 60 × 5s = up to 300s for kernel module + GSP firmware
+        _driver_ready=false
+        for _attempt in $(seq 1 "$DRIVER_MAX_ATTEMPTS"); do
+            if nvidia-smi -L 2>/dev/null | grep -q '^GPU 0:'; then
+                log "[0/7] NVIDIA driver ready: $(nvidia-smi -L 2>/dev/null | wc -l) GPU(s) enumerated (attempt ${_attempt}/${DRIVER_MAX_ATTEMPTS})"
+                _driver_ready=true
+                break
+            fi
+            log "[0/7] nvidia-smi -L not listing GPUs yet — driver loading, retry ${_attempt}/${DRIVER_MAX_ATTEMPTS} in 5s"
+            sleep 5
+        done
+        if [ "$_driver_ready" != true ]; then
+            die "[0/7] nvidia-smi -L never listed a GPU after ${DRIVER_MAX_ATTEMPTS} attempts — NVIDIA driver did not come up; aborting"
+        fi
+
+        log "[0/7] ECC read intentionally skipped (unreadable at boot — see 8th/9th deploy). Disabling ECC unconditionally + reboot. Boot-2 resumes via openarm-isaac-resume.service."
+
+        # Copy the rendered main script to a stable path so boot-2 can re-run it. $0 is
+        # /tmp/openarm-isaac.sh (the cloud-init bootstrap wrapper does `exec /tmp/openarm-isaac.sh`);
+        # that /tmp file may not survive the reboot, so copy it now.
+        USERDATA_SRC=$(readlink -f "$0" 2>/dev/null || echo /var/lib/cloud/instance/scripts/part-001)
+        if [ ! -f "$USERDATA_SRC" ]; then
+            USERDATA_SRC=/var/lib/cloud/instance/scripts/part-001
+        fi
+        if [ ! -f "$USERDATA_SRC" ]; then
+            die "[0/7] user-data source not found (tried \$0 and /var/lib/cloud/instance/scripts/part-001) — ECC 2-stage aborted"
+        fi
+        cp "$USERDATA_SRC" /var/lib/openarm-isaac/userdata-resume.sh
+        chmod +x /var/lib/openarm-isaac/userdata-resume.sh
+        log "[0/7] user-data source copied to /var/lib/openarm-isaac/userdata-resume.sh (src: ${USERDATA_SRC})"
+
+        # Persist the CFN-injected env vars (S3BucketName, Region, WaitConditionUrl, …) that the
+        # cloud-init wrapper exports. The main script references them as bash vars (S3_BUCKET=
+        # "${S3BucketName}" etc.) under `set -u`; boot-2's systemd unit has none of them in its
+        # environment, so without this EnvironmentFile the resume script dies on the first
+        # "${S3BucketName}" reference. part-001 IS the wrapper, so its `export KEY="VAL"` lines are
+        # exactly what we need.
+        awk '/^export /' /var/lib/cloud/instance/scripts/part-001 \
+            | sed 's/^export //' \
+            > /var/lib/openarm-isaac/userdata-env
+        chmod 600 /var/lib/openarm-isaac/userdata-env
+        log "[0/7] wrote EnvironmentFile /var/lib/openarm-isaac/userdata-env ($(wc -l < /var/lib/openarm-isaac/userdata-env) vars)"
+
+        # Register the systemd oneshot unit for boot-2 resume.
+        # NOTE: do NOT add `After=cloud-final.service` — cloud-final has an ordering dep on
+        # multi-user.target that, combined with our WantedBy, creates a cycle and systemd drops our
+        # start job (slam-nav deploy #10 boot-2 lesson; userdata-2stage-reboot-pattern.md 함정 ①).
+        # `After=docker.service` matters here: boot-2 does `docker pull` + `docker run`.
+        cat > /etc/systemd/system/openarm-isaac-resume.service <<'UNIT'
+[Unit]
+Description=OpenArm-Isaac UserData resume (post-ECC-disable reboot)
+After=network-online.target docker.service
+Wants=network-online.target
+ConditionPathExists=/var/lib/openarm-isaac/ecc-done
+ConditionPathExists=!/var/lib/openarm-isaac/userdata-done
+
+[Service]
+Type=oneshot
+EnvironmentFile=/var/lib/openarm-isaac/userdata-env
+ExecStart=/var/lib/openarm-isaac/userdata-resume.sh
+StandardOutput=journal
+StandardError=journal
+RemainAfterExit=yes
+# TimeoutStartSec was 7200 (2h). On the sibling openarm-lift-act target this 2h cap SIGTERM'd the
+# resume script mid-run on a long (50-demo) collection, killing the post-run upload + cfn-signal
+# while the docker container kept going (run9, 2026-06-11). The 500GB model download here can
+# likewise approach 2h. The real bound is the WaitCondition PT240M; defer to it so this service
+# never times out first.
+TimeoutStartSec=infinity
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+        systemctl daemon-reload
+        systemctl enable openarm-isaac-resume.service 2>&1 | tee -a /var/log/openarm-isaac-userdata.log \
+            || die "[0/7] systemctl enable openarm-isaac-resume.service failed"
+
+        # Disable ECC (pending-mode WRITE to the inforom; persists across reboots on L40S/L4 per
+        # NVIDIA docs). Unlike a read this does not need the GPU initialized. fail-loud: if the
+        # write itself fails, surface it now rather than crashing at first-render.
+        nvidia-smi -e 0 2>&1 | tee -a /var/log/openarm-isaac-userdata.log || die "[0/7] nvidia-smi -e 0 failed"
+        touch /var/lib/openarm-isaac/ecc-done
+
+        # Ship the boot-1 log before reboot for traceability (boot-2 gets a fresh RUN_ID).
+        if [ -n "${S3_BUCKET:-}" ] && [ -n "${REGION:-}" ]; then
+            aws s3 cp /var/log/openarm-isaac-userdata.log \
+                "s3://${S3_BUCKET}/${RUN_ID}-boot1/logs/userdata.log" \
+                --region "$REGION" 2>&1 | tee -a /var/log/openarm-isaac-userdata.log || true
+        fi
+
+        log "[0/7] Rebooting now. Boot-2 will get a new RUN_ID; WaitCondition stays open."
+        systemctl reboot
+        # Block until the reboot actually fires so the ERR trap does not see a non-zero return
+        # and prematurely signal FAILURE to the WaitCondition.
+        sleep 120
+        exit 0
+    else
+        # ── BOOT-2: ecc-done marker present → ECC disabled on boot-1; resume pipeline ──
+        log "[0/7] ecc-done marker present — post-reboot resume, ECC already disabled; proceeding to pipeline"
+    fi
+fi
+
 # ── [1/7] System dependencies ──────────────────────────────────────
 log "[1/7] Installing system packages (docker + nvidia-container-toolkit are pre-installed on DLAMI)..."
 export DEBIAN_FRONTEND=noninteractive
@@ -180,6 +324,10 @@ base64 -d > "${HOST_ASSETS_DIR}/openarm_bi_vla_env_cfg.py" << 'OVERLAY_CFG_EOF'
 {{ overlay_cfg_b64 -}}
 OVERLAY_CFG_EOF
 
+base64 -d > "${HOST_ASSETS_DIR}/patch_lerobot_py311.py" << 'PATCH_LEROBOT_EOF'
+{{ patch_lerobot_b64 -}}
+PATCH_LEROBOT_EOF
+
 log "  assets: $(ls -1 "$HOST_ASSETS_DIR" | tr '\n' ' ')"
 
 # ── [3.5/7] NGC login (Isaac Lab image may require auth) ──────────────────────────────────────
@@ -196,6 +344,21 @@ if [ -n "$NGC_API_KEY" ] && [ "$NGC_API_KEY" != "None" ]; then
         || log "[warn] NGC login failed — will attempt anonymous pull"
 else
     log "  No NGC API key in SSM (/vla-simulator/ngc-api-key) — attempting anonymous pull"
+fi
+
+# HF token for GATED model access. π0.5 (pi05) uses Google PaliGemma as its VLM backbone, so its
+# tokenizer step pulls `google/paligemma-3b-pt-224` — a GATED repo. Anonymous access returns 401
+# (10th-deploy blocker). A token stored at SSM /vla-simulator/hf-token (HF account that accepted the
+# PaliGemma license) is passed into the container as HF_TOKEN; huggingface_hub/transformers use it
+# automatically. The instance role grants ssm:GetParameter on /vla-simulator/* (vla-simulator-stack.ts).
+log "  Resolving HF token (optional; gated tokenizer needs it)..."
+HF_TOKEN=$(aws ssm get-parameter --name /vla-simulator/hf-token --with-decryption \
+    --query 'Parameter.Value' --output text --region "$REGION" 2>/dev/null || echo "")
+if [ -n "$HF_TOKEN" ] && [ "$HF_TOKEN" != "None" ]; then
+    log "  HF token loaded from SSM (gated repos enabled)"
+else
+    HF_TOKEN=""
+    log "  No HF token in SSM (/vla-simulator/hf-token) — gated model pulls (PaliGemma tokenizer) will 401"
 fi
 
 # ── [4/7] Pull the Isaac Lab container ────────────────────────────────────────────────────────
@@ -265,12 +428,81 @@ OVERLAY_DST="$WORK/source/openarm/openarm/tasks/manager_based/openarm_manipulati
 cp "$ASSETS/openarm_bi_vla_env_cfg.py" "$OVERLAY_DST"
 clog "overlay copied → $OVERLAY_DST"
 
-# 4. install LeRobot (pi05 inference stack) @ pinned commit, with the pi extra
-clog "Installing lerobot[pi] @ ${LEROBOT_COMMIT} ..."
-"$CONTAINER_PY" -m pip install "lerobot[pi] @ git+https://github.com/huggingface/lerobot.git@${LEROBOT_COMMIT}" \
-    2>&1 | tail -20 \
-    || { clog "[warn] lerobot[pi] extra failed — retrying base lerobot"; \
-         "$CONTAINER_PY" -m pip install "lerobot @ git+https://github.com/huggingface/lerobot.git@${LEROBOT_COMMIT}" 2>&1 | tail -20; }
+# 4. install LeRobot (pi05 inference stack) @ pinned commit, with the pi extra.
+#    LeRobot @ ${LEROBOT_COMMIT} (v0.5.2) targets Python >=3.12 and uses PEP-695 type
+#    syntax, but this NGC isaac-lab container is Python 3.11 (Kit runtime hard-lock). A
+#    plain `pip install git+...` fails twice over: pip refuses on the requires-python
+#    gate, and pip's install-time compileall hits SyntaxError on the 695 syntax. So we
+#    clone locally, run patch_lerobot_py311.py (relaxes the gate + rewrites all 5 PEP-695
+#    sites to TypeVar/Generic/plain-assign, semantics-identical; idempotent + self-
+#    verifying via AST and fail-loud anchors), then install from the patched tree.
+LEROBOT_SRC=/workspace/lerobot-src
+if [ ! -d "$LEROBOT_SRC" ]; then
+    clog "Cloning lerobot @ ${LEROBOT_COMMIT} for local patch+install..."
+    git clone https://github.com/huggingface/lerobot.git "$LEROBOT_SRC"
+    git -C "$LEROBOT_SRC" checkout "$LEROBOT_COMMIT"
+fi
+clog "lerobot commit: $(git -C "$LEROBOT_SRC" rev-parse HEAD)"
+
+clog "Patching lerobot for Python 3.11 (gate + PEP-695 + numpy/packaging floors)..."
+"$CONTAINER_PY" "$ASSETS/patch_lerobot_py311.py" "$LEROBOT_SRC" \
+    || { clog "ERROR: lerobot py3.11 patch failed (source layout changed?)"; exit 1; }
+
+# ── dependency-clobber guard ──────────────────────────────────────────────────────
+# The NGC isaac-lab Kit env is a single precisely-pinned environment: Isaac Sim's
+# prebundle torch is built against numpy 1.x (isaaclab/-tasks/-rl pin numpy<2; -rl also
+# packaging<24). A naive `pip install lerobot[pi]` drags numpy 1.x->2.x and
+# packaging->25 into that env, after which `import torch` dies
+# (ModuleNotFoundError torch._vendor...). The patcher above already lowered lerobot's
+# numpy/packaging *lower* bounds; here we pin the install to Isaac's *currently
+# installed* numpy+packaging via a constraints file. Freezing the live versions (rather
+# than hardcoding) self-adapts to the image and makes any transitive numpy-2 demand a
+# loud pip error instead of a silent clobber. pi05 inference uses numpy only via
+# np.digitize/np.linspace (1.x-stable) and lerobot uses packaging only via version.parse
+# — both safe under Isaac's pins.
+CONSTRAINTS=/workspace/isaac-pins-constraints.txt
+: > "$CONSTRAINTS"
+for _pkg in numpy packaging; do
+    _ver=$("$CONTAINER_PY" -m pip show "$_pkg" 2>/dev/null | awk '/^Version:/{print $2}')
+    if [ -n "$_ver" ]; then
+        echo "${_pkg}==${_ver}" >> "$CONSTRAINTS"
+    else
+        clog "[warn] ${_pkg} not found via pip show — constraint omitted (relying on Isaac upper-bound pins)"
+    fi
+done
+clog "Isaac dependency constraints (frozen from Kit env):"
+sed 's/^/  /' "$CONSTRAINTS" | while IFS= read -r _l; do clog "$_l"; done
+
+# [pi]   = pi05 policy stack. [av-dep] = PyAV (ffmpeg bindings) for eval video encoding:
+# lerobot.utils.io_utils.write_video imports `av` lazily in a worker thread, so a missing
+# `av` does NOT crash the rollout — it silently drops the .mp4 (12th deploy: rollout ran 150
+# steps + DONE, but Thread-4 write_video raised ImportError 'av' and no video was produced).
+# av is a binary wheel (numpy/packaging-safe under our constraints), so bundle it with [pi].
+clog "Installing lerobot[pi,av-dep] from patched tree (constrained to Isaac numpy/packaging) ..."
+"$CONTAINER_PY" -m pip install -c "$CONSTRAINTS" "${LEROBOT_SRC}[pi,av-dep]" \
+    2>&1 | tail -25 \
+    || { clog "[warn] lerobot[pi,av-dep] extra failed — retrying base lerobot + av (constrained)"; \
+         "$CONTAINER_PY" -m pip install -c "$CONSTRAINTS" "$LEROBOT_SRC" av 2>&1 | tail -25; }
+
+# Post-install guard: prove Isaac's torch still imports before the (slow, costly) sim boot.
+# A surviving numpy/packaging clobber dies here cheaply instead of after the 25GB image +
+# checkpoint download + Isaac Sim first-boot. `|| _verify_rc=$?` keeps set -e from
+# aborting before we can print the diagnostic.
+clog "Verifying Isaac Sim torch still imports after lerobot install..."
+_verify_rc=0
+"$CONTAINER_PY" - << 'PYVERIFY' || _verify_rc=$?
+import sys
+try:
+    import numpy, torch
+    print(f"[verify] numpy {numpy.__version__} / torch {torch.__version__} import OK")
+except Exception as e:
+    print(f"[verify] FATAL: post-install import broke Isaac stack: {e!r}")
+    sys.exit(1)
+PYVERIFY
+if [ "$_verify_rc" -ne 0 ]; then
+    clog "ERROR: lerobot install clobbered Isaac Sim's torch/numpy — see verify output above"
+    exit 1
+fi
 
 # 5. download the folding_latest checkpoint (revision pinned if provided)
 clog "Downloading checkpoint ${HF_REPO} (rev: ${HF_REVISION:-latest})..."
@@ -286,7 +518,12 @@ CKPT_DIR=$(echo "$CKPT_DIR" | tail -1)
 clog "checkpoint: ${CKPT_DIR}"
 
 # 6. run the rollout driver (boots Isaac Sim, drives folding_latest over the bimanual env, writes video)
+# openarm's stock config modules use repo-rooted absolute imports (`from source.openarm.openarm...`);
+# `source` has no __init__.py so it only resolves as a PEP-420 namespace pkg when the repo ROOT is on
+# sys.path. We run run_eval.py from $ASSETS (not the repo root openarm's docs assume), so export the
+# repo root on PYTHONPATH. env.py also self-heals via openarm.__file__, but this is the primary fix.
 clog "Running run_eval.py (boots Isaac Sim — first boot is slow)..."
+export PYTHONPATH="${WORK}:${PYTHONPATH:-}"
 cd "$ASSETS"
 "$CONTAINER_PY" run_eval.py \
     --policy-path  "$CKPT_DIR" \
@@ -306,6 +543,44 @@ cd "$ASSETS"
 clog "run_eval.py done — outputs in ${OUT}"
 CONTAINER_EOF
 chmod +x "${HOST_ASSETS_DIR}/container_run.sh"
+
+# ── [5.5/7] In-container CUDA-readiness gate ──────────────────────────────────────────────────
+# 15th deploy (RUN_ID 2026-06-07-0510) crashed at run_eval.py:124 `assert torch.cuda.is_available()`
+# AssertionError BEFORE Isaac Sim/policy boot. Diagnosed transient: the host `nvidia-smi -L` showed
+# 4× L4 healthy AND the 14th deploy ran the SAME code (dec061f) through a full 150-step rollout, so
+# it was not a code regression. Telling detail: boot-2's [2/7] driver/runtime check took ~3.5 min
+# after the reboot (slow post-reboot GPU init). The host-side `nvidia-smi -L` that [2/7] uses does
+# NOT guarantee torch.cuda.is_available()==True INSIDE the container, so gate on the container's own
+# view: run the Isaac image's kit python and retry until torch sees CUDA.
+#
+# Path matches container_run.sh's CONTAINER_PY (/workspace/isaaclab/_isaac_sim/python.sh; the image
+# defines `python` only as a ~/.bashrc alias, absent in non-interactive `docker run`). No Isaac Sim
+# boot here (plain torch import) so OMNI_KIT_ALLOW_ROOT / EULA env are unnecessary.
+#
+# On exhaustion we PROCEED ANYWAY (warn, not die): the gate's value is the WAIT for a transient to
+# clear, and run_eval.py:124 keeps its own assert which fails fast+cheap (container exit=1 → CFN
+# auto-rollback → terminate, cost ~0) if CUDA is genuinely still gone. ⚠️ host nvidia-smi was healthy
+# in the 15th crash, so this gate may not catch that exact transient — but it is effectively free
+# (a few short container starts) and never makes things worse, so it can only help.
+log "[5.5/7] Waiting for torch.cuda.is_available() INSIDE the Isaac container..."
+CUDA_MAX_ATTEMPTS=6        # 6 × 10s = up to 60s for post-reboot GPU init to settle
+_cuda_ready=false
+for _attempt in $(seq 1 "$CUDA_MAX_ATTEMPTS"); do
+    if docker run --rm --gpus all \
+        --entrypoint /workspace/isaaclab/_isaac_sim/python.sh \
+        "$ISAAC_LAB_IMAGE" \
+        -c 'import torch, sys; sys.exit(0 if torch.cuda.is_available() else 1)' \
+        >/dev/null 2>&1; then
+        log "[5.5/7] torch.cuda.is_available()=True in container (attempt ${_attempt}/${CUDA_MAX_ATTEMPTS})"
+        _cuda_ready=true
+        break
+    fi
+    log "[5.5/7] torch.cuda not ready in container yet — retry ${_attempt}/${CUDA_MAX_ATTEMPTS} in 10s"
+    sleep 10
+done
+if [ "$_cuda_ready" != true ]; then
+    log "[warn] [5.5/7] torch.cuda.is_available() still False after ${CUDA_MAX_ATTEMPTS} attempts — proceeding anyway (run_eval.py:124 has its own assert; transient may have cleared by sim boot)"
+fi
 
 # ── [6/7] Run the container per task ──────────────────────────────────────────────────────────
 log "[6/7] Running task(s) in the Isaac Lab container..."
@@ -352,6 +627,7 @@ for TASK_IDX in $(seq 0 $((TASK_COUNT - 1))); do
         -e "LEROBOT_COMMIT={{ lerobot_commit }}" \
         -e "HF_REPO={{ hf_repo }}" \
         -e "HF_REVISION={{ hf_model_revision }}" \
+        -e "HF_TOKEN=${HF_TOKEN}" \
         -e "TASK_INSTR=${TASK_INSTR}" \
         -e "STATE_KEYS=${STATE_KEYS}" \
         -e "CAMERA_KEYS=${CAMERA_KEYS}" \
@@ -495,6 +771,8 @@ aws sns publish \
     || log "[warn] SNS notification failed (continuing)"
 
 log "[7/7] Sending cfn-signal..."
+# Marker blocks openarm-isaac-resume.service from re-firing on any future reboot.
+mkdir -p /var/lib/openarm-isaac && touch /var/lib/openarm-isaac/userdata-done
 cfn_signal 0
 
 if [ "${AUTO_TERMINATE}" = "true" ]; then

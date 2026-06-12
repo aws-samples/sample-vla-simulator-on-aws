@@ -8,6 +8,7 @@ Usage:
   python deploy.py --vla openvla-oft        # OpenVLA-OFT + LIBERO-10 local mode
   python deploy.py --vla lap                # LAP-3B + LIBERO-Spatial local mode
   python deploy.py --vla openarm-isaac      # π0.5 (folding_latest) + Isaac Lab bimanual OpenArm local mode
+  python deploy.py --vla openarm-lift-act   # OpenArm unimanual Lift-Cube × ACT — scripted demo COLLECTION (HDF5)
   python deploy.py --vla gr00t --bridge     # GR00T bridge mode (vla-hub ECS)
   python deploy.py --vla gr00t-gr1 --bridge # GR00T-GR1 bridge mode (vla-hub ECS, if N1.6 supported)
   python deploy.py --vla pi    --bridge     # π0.5  bridge mode (vla-hub ECS)
@@ -163,7 +164,7 @@ def _maybe_import_orphan_bucket(
 def main():
     parser = argparse.ArgumentParser(description="vla-simulator 1-Click Deploy")
     parser.add_argument("--vla", required=True,
-                        choices=["gr00t", "gr00t-gr1", "pi", "openvla-oft", "lap", "openarm-isaac"],
+                        choices=["gr00t", "gr00t-gr1", "pi", "openvla-oft", "lap", "openarm-isaac", "openarm-lift-act"],
                         help="VLA model to deploy")
     parser.add_argument("--bridge", action="store_true",
                         help="Bridge mode: use vla-hub ECS endpoint instead of local model")
@@ -207,6 +208,10 @@ def main():
             print("[error] Bridge mode not supported for openarm-isaac (local only — LeRobot pi05 runs in-process on the sim GPU).",
                   file=sys.stderr)
             sys.exit(1)
+        if args.vla == "openarm-lift-act":
+            print("[error] Bridge mode not supported for openarm-lift-act (local only — scripted demo collection, no policy server).",
+                  file=sys.stderr)
+            sys.exit(1)
         if args.vla in ("gr00t", "gr00t-gr1"):
             raw_grpc = str(bridge_cfg.get("remote_grpc_endpoint", "")).strip()
             raw_vpc = str(bridge_cfg.get("vpc_id", "")).strip()
@@ -245,6 +250,8 @@ def main():
         stack_name = "LAP-Demo"
     elif args.vla == "openarm-isaac":
         stack_name = "OpenArm-Isaac-Demo"
+    elif args.vla == "openarm-lift-act":
+        stack_name = "OpenArm-Lift-ACT-Demo"
     else:
         stack_name = "Pi-Demo"
     mode = "bridge" if args.bridge else "local"
@@ -318,6 +325,8 @@ def main():
             print("  Estimated time: ~90-150 min (uv venvs ~25min + HF download ~10min + LIBERO-Spatial eval ~30-50min + buffer)")
         elif args.vla == "openarm-isaac":
             print("  Estimated time: ~120-180 min (docker pull Isaac Lab image ~20-30min + openarm/lerobot install + ckpt DL + sim boot ~10min + single rollout)")
+        elif args.vla == "openarm-lift-act":
+            print("  Estimated time: ~60-90 min (docker pull Isaac Lab image ~20-30min + openarm install + sim boot ~10min + scripted collection; first run small num_demos)")
         else:
             print("  Estimated time: ~90-120 min per suite (install ~30min + eval ~60-90min)")
     print("  If this is your first deploy, confirm the SNS subscription email to receive notifications.")

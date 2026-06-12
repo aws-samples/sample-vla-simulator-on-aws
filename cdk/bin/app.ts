@@ -10,6 +10,7 @@
  *   npx cdk deploy OpenVLA-OFT-Spatial-Demo    -c region=us-east-1 -c vla=openvla-oft -c libero_suite=spatial
  *   npx cdk deploy LAP-Demo                    -c region=us-east-1 -c vla=lap
  *   npx cdk deploy OpenArm-Isaac-Demo          -c region=us-east-1 -c vla=openarm-isaac
+ *   npx cdk deploy OpenArm-Lift-ACT-Demo       -c region=us-east-1 -c vla=openarm-lift-act
  */
 
 import * as cdk from 'aws-cdk-lib';
@@ -22,9 +23,9 @@ const app = new cdk.App();
 const region = app.node.tryGetContext('region') ?? 'ap-northeast-2';
 const vla: string = app.node.tryGetContext('vla');
 
-if (!vla || !['gr00t', 'gr00t-gr1', 'pi', 'openvla-oft', 'lap', 'openarm-isaac'].includes(vla)) {
+if (!vla || !['gr00t', 'gr00t-gr1', 'pi', 'openvla-oft', 'lap', 'openarm-isaac', 'openarm-lift-act'].includes(vla)) {
   throw new Error(
-    'CDK context "vla" is required. Pass -c vla=gr00t, -c vla=gr00t-gr1, -c vla=pi, -c vla=openvla-oft, -c vla=lap, or -c vla=openarm-isaac.\n' +
+    'CDK context "vla" is required. Pass -c vla=gr00t, -c vla=gr00t-gr1, -c vla=pi, -c vla=openvla-oft, -c vla=lap, -c vla=openarm-isaac, or -c vla=openarm-lift-act.\n' +
     'Use deploy.py which sets this automatically.',
   );
 }
@@ -51,6 +52,7 @@ const stackNameMap: Record<string, string> = {
   'openvla-oft': oftStackName(liberoSuite),
   'lap':         'LAP-Demo',
   'openarm-isaac': 'OpenArm-Isaac-Demo',
+  'openarm-lift-act': 'OpenArm-Lift-ACT-Demo',
 };
 const stackName = stackNameMap[vla];
 
@@ -66,6 +68,7 @@ const descriptionMap: Record<string, string> = {
   'openvla-oft': oftDescription(liberoSuite),
   'lap':         'LAP-3B + LIBERO-Spatial (Franka Panda, JAX policy server + sim client)',
   'openarm-isaac': 'π0.5 (LeRobot pi05 folding_latest, 16-DOF) + Isaac Lab bimanual OpenArm (pipe-proof)',
+  'openarm-lift-act': 'OpenArm unimanual Lift-Cube × ACT — scripted teleop-free demo collection (HDF5)',
 };
 
 const stack = new VlaSimulatorStack(app, stackName, {

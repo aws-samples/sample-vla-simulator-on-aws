@@ -125,8 +125,17 @@ class _LeRobotIsaacVecEnv:
         self._max_episode_steps = int(max_episode_steps)
         self.num_envs = int(self._u.num_envs)
         # Proxy metadata so .unwrapped.metadata["render_fps"] resolves (manager_based_rl_env.py:88).
+        # Isaac sets metadata["render_fps"] = 1 / step_dt as a *float* (true division). lerobot's
+        # write_video (io_utils.py:79) passes that fps straight into PyAV's
+        # container.add_stream("libx264", rate=fps), and PyAV 15.x's to_avrational() rejects a bare
+        # float (`AttributeError: 'float' object has no attribute 'numerator'`) — the 14th-deploy
+        # video-encode failure. A plain setdefault() is a no-op here because Isaac already populated
+        # the key, so coerce render_fps to an int unconditionally (libx264 rate is conventionally int).
         self.metadata = dict(getattr(self._u, "metadata", {}) or {})
-        self.metadata.setdefault("render_fps", int(round(1.0 / float(self._u.step_dt))))
+        _fps = self.metadata.get("render_fps")
+        if _fps is None:
+            _fps = 1.0 / float(self._u.step_dt)
+        self.metadata["render_fps"] = int(round(float(_fps)))
 
     # rollout reads env.unwrapped.metadata[...] — we ARE the unwrapped vec env.
     @property
@@ -230,8 +239,29 @@ def make_env(n_envs: int = 1, use_async_envs: bool = False, cfg: Any = None):
 
     # (A2) Trigger gym.register for the overlay. Importing the openarm tasks package auto-imports
     # subpackages (import_packages), but we import the overlay explicitly to be deterministic.
-    import openarm.tasks  # noqa: F401, E402  (fires base env registrations)
     import importlib  # noqa: E402
+    import os  # noqa: E402
+    import sys  # noqa: E402
+
+    # (A2b) openarm's stock config modules use ABSOLUTE imports rooted at the REPO, e.g.
+    #   `from source.openarm.openarm.tasks...assets.openarm_bimanual import OPEN_ARM_HIGH_PD_CFG`
+    #   (bimanual/reach/config/joint_pos_env_cfg.py:25 — pulled in by our overlay's
+    #   `from .joint_pos_env_cfg import OpenArmReachEnvCfg`). `source` has no __init__.py, so it only
+    #   resolves as a PEP-420 namespace package when the repo ROOT is on sys.path. `pip install -e
+    #   source/openarm` exposes the top-level `openarm` package but NOT `source`, and openarm's own
+    #   docs always run from the repo root (cwd on sys.path) — our driver runs from /workspace/assets,
+    #   so we must add the repo root explicitly. Derive it from the installed openarm package:
+    #   <repo>/source/openarm/openarm/__init__.py  → repo root = parents[3] of openarm.__file__.
+    import openarm  # noqa: E402  (top-level editable package)
+
+    _openarm_init = getattr(openarm, "__file__", None)
+    if _openarm_init:
+        # .../source/openarm/openarm/__init__.py → up 3 dirs = .../source/openarm ; up 4 = repo root
+        _repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_openarm_init)))))
+        if os.path.isdir(os.path.join(_repo_root, "source", "openarm", "openarm")) and _repo_root not in sys.path:
+            sys.path.insert(0, _repo_root)
+
+    import openarm.tasks  # noqa: F401, E402  (fires base env registrations)
 
     importlib.import_module(_OVERLAY_MODULE)  # fires Isaac-Reach-OpenArm-Bi-VLA-v0 registration
 

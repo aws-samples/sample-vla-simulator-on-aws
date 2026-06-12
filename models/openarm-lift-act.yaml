@@ -1,0 +1,85 @@
+# OpenArm UNIMANUAL Lift-Cube × ACT — demo COLLECTION target (Phase 1b cost part)
+# New --vla target: drives the teleop-free scripted pick-lift state machine
+# (collect_demos_sm.py) on the OpenArm ACT env overlay (openarm_uni_lift_act_env_cfg.py)
+# inside the NGC isaac-lab container, and exports SUCCESSFUL lift demos to a single HDF5.
+#
+# SCOPE — COLLECTION ONLY. This target deliberately does NOT install LeRobot, does NOT
+# download any policy checkpoint, and does NOT render a rollout video. It clones
+# openarm_isaac_lab, pip-installs the openarm package, drops the ACT overlay into the
+# editable source tree, and runs collect_demos_sm.py. Output = HDF5 (+ logs) to S3.
+#   - Phase 1c (hdf5_to_lerobot.py) converts HDF5 → LeRobotDataset off-GPU (no cost).
+#   - Phase 2 (ACT train) + Phase 3 (eval video, score 70) are SEPARATE later targets.
+# Rationale: the first GPU run's ONLY job is to validate C1–C4 (does the scripted SM
+# actually grasp+lift?). Stripping LeRobot/ckpt removes the openarm-isaac py3.11 patch +
+# gated-HF blockers entirely, so a near-zero success count points squarely at C1–C4.
+#
+# Source of truth for the integration contract + C1–C4 runtime facts:
+#   research/pai/innovation-hub-apj/openarm-pnp-act-path-2026-06-07.md
+#   assets/openarm-lift-act/{openarm_uni_lift_act_env_cfg,collect_demos_sm,hdf5_to_lerobot}.py heads
+
+model:
+  id: openarm-lift-act
+
+  # ── enactic/openarm_isaac_lab (unimanual Lift-Cube chassis; ACT overlay applied on top) ───────
+  # github.com/enactic/openarm_isaac_lab — same pin as the openarm-isaac bimanual target.
+  # Validated clone HEAD 2026-06-04; unimanual/lift/config/ + assets/openarm_unimanual.py +
+  # unimanual/lift/mdp/terminations.object_reached_goal all confirmed present at this sha.
+  openarm_isaac_commit: "bad82e2"
+
+  # ── Isaac Sim / Isaac Lab (NGC container — IsaacSim 5.1 + Lab 2.3 + Py3.11) ────────────────────
+  # warp (state machine) + h5py + the RecorderManager all ship in this image; no extra pip beyond
+  # `pip install -e source/openarm`. LeRobot is NOT installed here (collection-only target).
+  isaac_lab_image: "nvcr.io/nvidia/isaac-lab:2.3.0"               # IsaacSim 5.1.0 + IsaacLab 2.3.0 + Py3.11
+
+  # ── ACT overlay task ids (registered when the overlay module is imported) ─────────────────────
+  task_id: "Isaac-Lift-Cube-OpenArm-ACT-v0"
+  # Dotted module path of the overlay, imported by collect_demos_sm.py BEFORE gym.make so its
+  # gym.register fires. The overlay file is copied into this exact package location by the userdata.
+  register_module: "openarm.tasks.manager_based.openarm_manipulation.unimanual.lift.config.openarm_uni_lift_act_env_cfg"
+
+instance:
+  # Isaac Sim 5.1 + --enable_cameras render + 16 parallel collection envs is render-bound.
+  # MULTI-GPU ONLY (≥4 GPU): 16 envs × 2 TiledCameras need >24 GB device mem for the render
+  # ResourceLoader, so a single-GPU L4/A10G (24 GB) OOMs at first render (run 0418 died with
+  # ERROR_OUT_OF_DEVICE_MEMORY before the SM loop). 24xlarge is the 4-GPU capacity fallback;
+  # .2xlarge/.16xlarge single-GPU types are deliberately removed (mirrors CDK INSTANCE_TYPES).
+  # CAPACITY (2026-06-11, run9): all g5/g6 .12xl/.24xl × AZ combos hit InsufficientInstanceCapacity
+  # in us-east-1 (0-cost rollback). Added g6e (4× L40S 48 GB — 4-GPU, more VRAM than L4) LAST so the
+  # cheaper g5/g6 are still preferred. CDK INSTANCE_TYPES mirrors this list.
+  preferred: [g6.12xlarge, g5.12xlarge, g6.24xlarge, g5.24xlarge, g6e.12xlarge, g6e.24xlarge]
+  # Isaac Lab container image (~20-30 GB) + extracted layers + openarm clone + HDF5 demos.
+  # No checkpoint download (collection-only) so smaller than openarm-isaac's 500 GB.
+  ebs_gb: 300
+  # Docker pull (large image) ~20-30min + sim boot + scripted collection. No model server warmup.
+  creationpolicy_timeout: PT240M
+
+# ── Collection knobs (consumed by collect_demos_sm.py via the userdata) ───────────────────────
+# BEAUTY / VIDEO RE-RENDER MODE (2026-06-11). The 50-demo ACT-TRAINING dataset is ALREADY collected
+# (run9 `2026-06-10-1635`, S3 .../datasets + lerobot_dataset — that flip is what Phase 2 trains on),
+# so re-pointing this yaml at a high-resolution short run loses NO training data. Goal here = a crisp
+# shareable unimanual PnP clip. The recorded TiledCamera frames ARE the video (HDF5 → Phase 1c
+# LeRobotDataset mp4 → ffmpeg H.264), so true high-res = re-render at a higher camera resolution, NOT
+# an upscale of the 224² frames. C1–C4 stay VALIDATED (run8 recipe: position_threshold=0.025, 4-GPU).
+#
+# To restore ACT-TRAINING collection later: num_demos 50 / num_envs 16 / cam_res 224 / max_steps 150000.
+# (run8 throughput: demo 1 @ step ~7100 warmup, then ~1500 steps/demo; 16 = proven-bootable square.)
+collection:
+  num_demos: 3                 # BEAUTY: only need a few clean takes to pick the best clip (training used 50)
+  # num_envs MUST be a perfect square (TiledCamera tiles N per-env cameras on a ceil(sqrt(N))×ceil(N/cols)
+  # grid — isaaclab tiled_camera.py:406; a non-square N leaves an empty tile → None overscan params →
+  # `overscan_z - overscan_x` TypeError at gym.make(), which crashed run 1200's num_envs=8 attempt).
+  # 16 = 4×4 was the proven training value. For the BEAUTY run we DROP to 4 (=2×2): the proven OOM
+  # (run 0418, single 24GB L4) was 16-env (16 physics sims + a 4×4-tiled 896² render target per sensor).
+  # At 768² the per-sensor render target grows to 2×768=1536² (~3× the pixel area), but 4 envs cut the
+  # physics footprint to ¼ — net it should fit the 4× L4/A10G (24GB) pool, and g6e (L40S 48GB) is in the
+  # instance list as a higher-VRAM safety net. Only use perfect squares (4, 9, 16, 25…).
+  num_envs: 4                  # BEAUTY: 4=2×2 (down from training's 16) to offset the higher-res render VRAM
+  position_threshold: 0.025    # SM EE position-reached threshold (m) — C3 VALIDATED @ run8 (do not change)
+  max_steps: 60000             # BEAUTY safety net: 3 demos at 4-env throughput finish well under this
+  # HIGH-RES BEAUTY RENDER (2026-06-11): 224 → 768. 224 is the ACT-training resolution (matches common
+  # pretrained vision stacks); 768 is 3.4× the linear detail for a sharp shareable clip. Exported to
+  # OPENARM_CAM_RES, read by the overlay (openarm_uni_lift_act_env_cfg.py) when it builds the wrist+table
+  # TiledCameras — the resolution flows straight through HDF5 → Phase 1c mp4 → ffmpeg. Higher VALUES are
+  # possible (1024) but need the g6e (48GB) instance — 768²/4env is the safe-on-24GB high-res default.
+  cam_res: 768                 # square camera resolution (px) — BEAUTY re-render (ACT-training default = 224)
+  task: "lift the cube"        # natural-language task string (stored for the later LeRobot convert)

@@ -166,6 +166,19 @@ def main() -> int:
     policy_cfg.pretrained_path = Path(args.policy_path)
     policy_cfg.device = args.device
 
+    # folding_latest config.json ships compile_model=True / compile_mode="max-autotune"
+    # (a *training* setting baked into the inference checkpoint, like tokenizer_name).
+    # That wraps PI05.sample_actions in torch.compile (modeling_pi05.py:601); on the first
+    # rollout step inductor spawns a compile-worker subprocess that cannot inherit the parent's
+    # CUDA context, so triton_helpers.set_driver_to_gpu() raises
+    # "RuntimeError: Could not find an active GPU backend" → InductorError (12th deploy).
+    # torch.compile is a perf optimization only — eager mode is numerically identical — so we
+    # disable it for inference. VLA behaviour unchanged.
+    if getattr(policy_cfg, "compile_model", False):
+        log.info("Disabling checkpoint's compile_model=True (eager inference; avoids inductor "
+                 "subprocess 'no active GPU backend' crash)")
+        policy_cfg.compile_model = False
+
     policy = make_policy(cfg=policy_cfg, env_cfg=env_cfg, rename_map={})
     policy.eval()
 
@@ -217,5 +230,37 @@ def main() -> int:
     return 0
 
 
+def _force_close_sim() -> None:
+    """Close the Isaac Sim app and hard-exit, bypassing Kit's lingering non-daemon threads.
+
+    WHY (10th-deploy cost lesson): once `make_local_env()` boots Isaac Sim, AppLauncher spawns
+    non-daemon renderer/physics threads. If ANYTHING after that raises (e.g. the policy-load
+    `make_pre_post_processors` gated-repo 401), `vec_env.close()` is never reached, the sim app
+    stays up, and the Python process HANGS instead of exiting. The container then never returns,
+    so the userdata `docker run` never finishes, cfn_signal never fires, and the CFN WaitCondition
+    keeps the g6.12xl billing for its full 4h timeout. We therefore close the sim app from the
+    loaded env module (sys.modules["openarm_isaac_env"]._SIMULATION_APP) on every exit path, then
+    `os._exit()` to guarantee process teardown regardless of those threads.
+    """
+    mod = sys.modules.get("openarm_isaac_env")
+    app = getattr(mod, "_SIMULATION_APP", None) if mod is not None else None
+    if app is not None:
+        try:
+            app.close()
+        except Exception:  # noqa: BLE001 — best-effort; we hard-exit next regardless
+            pass
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    _rc = 1
+    try:
+        _rc = main()
+    except SystemExit as e:  # argparse / explicit sys.exit — preserve the intended code
+        _rc = e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
+    except BaseException:  # noqa: BLE001 — log full traceback, then fail-loud + hard-exit
+        logging.getLogger("run_eval").exception("run_eval.py crashed — closing sim and hard-exiting")
+        _rc = 1
+    finally:
+        _force_close_sim()
+    # os._exit bypasses Kit's non-daemon threads that would otherwise hang interpreter shutdown.
+    os._exit(_rc if isinstance(_rc, int) else 1)

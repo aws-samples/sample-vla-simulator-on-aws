@@ -55,6 +55,14 @@ const INSTANCE_TYPES: Record<string, string[]> = {
   lap:           ['g6.xlarge',   'g6.2xlarge',  'g5.xlarge',  'g5.2xlarge'],
   // Isaac Sim 5.1 + --enable_cameras render is heavy → 12xlarge tier (mirrors gr00t-gr1).
   'openarm-isaac': ['g6.12xlarge', 'g5.12xlarge', 'g6.2xlarge', 'g5.2xlarge'],
+  // 16 collection envs × 2 TiledCameras → ResourceLoader needs >24 GB device mem, so a single-GPU
+  // L4/A10G (24 GB) OOMs at first render (run 0418: ERROR_OUT_OF_DEVICE_MEMORY before SM loop).
+  // MULTI-GPU ONLY (≥4 GPU): never let AzSelector fall back to a single-GPU type. 24xlarge is the
+  // capacity fallback (also 4 GPU, more vCPU). g6/g5 .16xlarge is a single-GPU trap — excluded.
+  // CAPACITY (2026-06-11, run9): all 16 g5/g6 .12xl/.24xl × AZ combos returned InsufficientInstance-
+  // Capacity in us-east-1 → 0-cost rollback (AzSelector probes via run_instances BEFORE launch).
+  // Widened with g6e (4× L40S 48 GB — 4-GPU, MORE VRAM than L4, kept LAST so cheaper g5/g6 win first).
+  'openarm-lift-act': ['g6.12xlarge', 'g5.12xlarge', 'g6.24xlarge', 'g5.24xlarge', 'g6e.12xlarge', 'g6e.24xlarge'],
 };
 
 export class VlaSimulatorStack extends cdk.Stack {
