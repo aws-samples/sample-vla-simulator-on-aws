@@ -1,16 +1,16 @@
 # VLA Simulator — 1-Click VLA Simulation on AWS
 
-Run Vision-Language-Action (VLA) robot simulation workloads on AWS GPU instances with a single command. Supports NVIDIA GR00T N1.7, GR00T N1.6 (GR1 humanoid), π0.5 (openpi), OpenVLA-OFT, and LAP-3B.
+Run Vision-Language-Action (VLA) robot simulation workloads on AWS GPU instances with a single command. Supports NVIDIA GR00T N1.7, GR00T N1.6 (GR1 humanoid), π0.5 (openpi), OpenVLA-OFT, and LAP-3B — plus an OpenArm Lift-Cube target in Isaac Lab for scripted ACT demo collection.
 
-> See [Showcase — VLA Rollouts](#showcase--vla-rollouts) for sample rollouts across all four policies and a range of LIBERO / RoboCasa verbs.
+> See [Showcase — VLA Rollouts](#showcase--vla-rollouts) for sample rollouts across the trained policies and the OpenArm scripted collection run, spanning a range of LIBERO / RoboCasa verbs.
 
 ## Overview
 
 | Feature | Detail |
 |---------|--------|
 | **Models** | GR00T N1.7-LIBERO, GR00T N1.6-3B (GR1), π0.5 (pi05_libero), OpenVLA-OFT (LIBERO-10), LAP-3B (LIBERO-Spatial) |
-| **Simulation** | LIBERO / RoboCasa (robosuite + MuJoCo, headless EGL) |
-| **Deploy** | AWS CDK + EC2 GPU (g6/g5, us-east-1) |
+| **Simulation** | LIBERO / RoboCasa (robosuite + MuJoCo, headless EGL); Isaac Lab (OpenArm Lift-Cube collection) |
+| **Deploy** | AWS CDK + EC2 GPU (g6/g5, us-east-1; OpenArm needs a 4-GPU `.12xl`) |
 | **Results** | S3 (MP4 video + summary) + SNS email |
 | **Cleanup** | Auto-terminate EC2; run `destroy.py` for stack teardown |
 
@@ -26,6 +26,7 @@ Run Vision-Language-Action (VLA) robot simulation workloads on AWS GPU instances
 | `openvla-oft` | `goal` | OpenVLA-OFT-7B (LIBERO-Goal fine-tune) | LIBERO-Goal | Franka Panda (7-DOF) | `OpenVLA-OFT-Goal-Demo` |
 | `openvla-oft` | `10` (default, alias `long`) | OpenVLA-OFT-7B (LIBERO-10 fine-tune) | LIBERO-10 long-horizon | Franka Panda (7-DOF) | `OpenVLA-OFT-Demo` |
 | `lap` | — | LAP-3B (PaliGemma-3B + Flow Matching, JAX) | LIBERO-Spatial | Franka Panda (7-DOF) | `LAP-Demo` |
+| `openarm-lift-act` | — | Scripted state machine (ACT data collection) | Isaac Lab Lift-Cube | OpenArm (unimanual, 7-DOF + gripper) | `OpenArm-Lift-ACT-Demo` |
 
 ### Showcase — VLA Rollouts
 
@@ -75,6 +76,17 @@ The GR1 humanoid is a different embodiment from Franka Panda — two arms, waist
 #### `gr00t` — GR00T N1.7 on LIBERO-10 (Franka Panda)
 
 *Video capture pending — KITCHEN_SCENE3/4 success rate is `1.0` on the validated runs (see [Expected Results](#expected-results)), but those rollout videos were not retained locally. Will backfill on the next `--vla gr00t` deploy.*
+
+#### `openarm-lift-act` — OpenArm unimanual Lift-Cube (Isaac Lab)
+
+> **Not a learned-policy rollout.** Unlike the entries above (each a trained VLA evaluated in LIBERO/RoboCasa), this target runs a **scripted state machine** (`REST → APPROACH → GRASP → LIFT`) on the OpenArm arm in Isaac Lab to *collect* successful pick-and-lift demonstrations — the camera + state + action HDF5 that an ACT policy is then trained on. The clip shows the data-collection rollout, not an evaluated policy. Training ACT on this dataset and showing a *learned* rollout is the next step.
+
+Rendered at 768×768, captured during a `--vla openarm-lift-act` collection run (`g6.12xlarge`, 4× L4, eu-central-1, 2026-06-11). The third-person (table) view is the beauty shot; the wrist view is the gripper POV.
+
+| Third-person (table camera) — pick + lift cube | Wrist camera (gripper POV) |
+|---|---|
+| ![OpenArm Lift-Cube — table view (scripted collection)](docs/showcase/openarm-lift-act/lift-cube-table-success.gif) | ![OpenArm Lift-Cube — wrist view (scripted collection)](docs/showcase/openarm-lift-act/lift-cube-wrist-success.gif) |
+| MP4: [`openarm-lift-act/lift-cube-table-success.mp4`](docs/showcase/openarm-lift-act/lift-cube-table-success.mp4) | MP4: [`openarm-lift-act/lift-cube-wrist-success.mp4`](docs/showcase/openarm-lift-act/lift-cube-wrist-success.mp4) |
 
 ---
 
@@ -156,6 +168,9 @@ python deploy.py --vla openvla-oft --libero-suite goal   --email you@example.com
 
 # LAP-3B — LIBERO-Spatial (zero-shot cross-embodiment VLA, JAX policy server, ~1.5-2.5 hrs)
 python deploy.py --vla lap --email you@example.com
+
+# OpenArm Lift-Cube — scripted ACT demo collection in Isaac Lab (HDF5 only; needs a 4-GPU instance)
+python deploy.py --vla openarm-lift-act --email you@example.com
 ```
 
 On first deploy you will receive an SNS subscription confirmation email — **click the link** to enable notifications.
@@ -306,7 +321,9 @@ vla-simulator/
     ├── gr00t-gr1-userdata.sh.j2    # GR00T N1.6 + GR1 humanoid
     ├── pi-userdata.sh.j2           # π0.5 (Docker Compose)
     ├── openvla-oft-userdata.sh.j2  # OpenVLA-OFT (single conda env)
-    └── lap-userdata.sh.j2          # LAP-3B (uv 2-venv: JAX policy + LIBERO sim)
+    ├── lap-userdata.sh.j2          # LAP-3B (uv 2-venv: JAX policy + LIBERO sim)
+    ├── openarm-isaac-userdata.sh.j2     # OpenArm bimanual π0.5 eval (Isaac Lab container)
+    └── openarm-lift-act-userdata.sh.j2  # OpenArm Lift-Cube scripted ACT collection (Isaac Lab)
 ```
 
 ---
