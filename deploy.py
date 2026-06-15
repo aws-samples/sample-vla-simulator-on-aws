@@ -164,7 +164,7 @@ def _maybe_import_orphan_bucket(
 def main():
     parser = argparse.ArgumentParser(description="vla-simulator 1-Click Deploy")
     parser.add_argument("--vla", required=True,
-                        choices=["gr00t", "gr00t-gr1", "pi", "openvla-oft", "lap", "openarm-isaac", "openarm-lift-act"],
+                        choices=["gr00t", "gr00t-gr1", "gr00t-g1", "pi", "openvla-oft", "lap", "openarm-isaac", "openarm-lift-act"],
                         help="VLA model to deploy")
     parser.add_argument("--bridge", action="store_true",
                         help="Bridge mode: use vla-hub ECS endpoint instead of local model")
@@ -212,7 +212,7 @@ def main():
             print("[error] Bridge mode not supported for openarm-lift-act (local only — scripted demo collection, no policy server).",
                   file=sys.stderr)
             sys.exit(1)
-        if args.vla in ("gr00t", "gr00t-gr1"):
+        if args.vla in ("gr00t", "gr00t-gr1", "gr00t-g1"):
             raw_grpc = str(bridge_cfg.get("remote_grpc_endpoint", "")).strip()
             raw_vpc = str(bridge_cfg.get("vpc_id", "")).strip()
             if not raw_grpc or not raw_vpc:
@@ -244,6 +244,8 @@ def main():
         stack_name = "GR00T-Demo"
     elif args.vla == "gr00t-gr1":
         stack_name = "GR00T-GR1-Demo"
+    elif args.vla == "gr00t-g1":
+        stack_name = "GR00T-G1-Demo"
     elif args.vla == "openvla-oft":
         stack_name = oft_stack_name(libero_suite)
     elif args.vla == "lap":
@@ -307,7 +309,7 @@ def main():
     # 2. CDK deploy
     print("[2/2] Starting CDK deploy...")
     if mode == "bridge":
-        if args.vla in ("gr00t", "gr00t-gr1"):
+        if args.vla in ("gr00t", "gr00t-gr1", "gr00t-g1"):
             print("  Estimated time: ~60 min (install ~20-30min + bridge eval ~30min)")
         else:
             print("  Estimated time: ~30-40 min (install ~10min + bridge eval ~20-30min)")
@@ -316,6 +318,8 @@ def main():
             print("  Estimated time: ~120 min (install ~30min + model download ~10min + sim ~80min)")
         elif args.vla == "gr00t-gr1":
             print("  Estimated time: ~90 min (install ~20min + model download ~5min + sim ~60min)")
+        elif args.vla == "gr00t-g1":
+            print("  Estimated time: ~120-150 min (WBC install ~25min [submodule+Git-LFS+3 editable] + ckpt DL + loco-manip sim ~60-90min)")
         elif args.vla == "openvla-oft":
             if libero_suite == "10":
                 print("  Estimated time: ~180 min (conda/pip ~30min + HF download ~10min + LIBERO-10 eval ~120min)")

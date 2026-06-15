@@ -50,6 +50,9 @@ const DLAMI_MAPPING: Record<string, string> = {
 const INSTANCE_TYPES: Record<string, string[]> = {
   gr00t:         ['g6.12xlarge', 'g5.12xlarge', 'g6.xlarge',  'g5.xlarge'],
   'gr00t-gr1':   ['g6.12xlarge', 'g5.12xlarge', 'g6.xlarge',  'g5.xlarge'],
+  // G1 WBC rollout = 5 parallel MuJoCo envs (CPU/EGL render) + 1 CUDA policy server.
+  // 12xlarge tier mirrors gr00t-gr1; xlarge single-GPU kept last as a capacity fallback.
+  'gr00t-g1':    ['g6.12xlarge', 'g5.12xlarge', 'g6.xlarge',  'g5.xlarge'],
   pi:            ['g5.xlarge',   'g5.2xlarge',  'g6.xlarge',  'g6.2xlarge'],
   'openvla-oft': ['g6.xlarge',   'g5.xlarge',   'g6.2xlarge', 'g5.2xlarge'],
   lap:           ['g6.xlarge',   'g6.2xlarge',  'g5.xlarge',  'g5.2xlarge'],
@@ -92,7 +95,7 @@ export class VlaSimulatorStack extends cdk.Stack {
     // π0.5 bridge additionally needs nlb_endpoint
     const nlbEndpoint: string =
       (this.node.tryGetContext('nlb_endpoint') as string | undefined) ?? '';
-    const isGr00tVla = vla === 'gr00t' || vla === 'gr00t-gr1';
+    const isGr00tVla = vla === 'gr00t' || vla === 'gr00t-gr1' || vla === 'gr00t-g1';
     const bridgeMode = !!(vpcIdCtx && (isGr00tVla || nlbEndpoint));
 
     // EBS size: bridge mode may use smaller disk (π0.5 skips checkpoint download)

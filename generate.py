@@ -81,6 +81,7 @@ def _build_gr00t_ctx(config: dict, resolved_grpc: str, model_id: str) -> dict:
         "hf_repo": model.get("hf_repo", default_hf_repo),
         "hf_subfolder": model.get("hf_subfolder", ""),
         "hf_model_revision": model.get("hf_model_revision", ""),
+        "robosuite_commit": model.get("robosuite_commit", ""),  # gr00t-g1 only (WBC robosuite fork pin)
         "remote_grpc_endpoint": resolved_grpc,
     }
 
@@ -114,6 +115,12 @@ def generate_gr00t_gr1(config: dict, resolved_grpc: str, resolved_vpc: str, dry_
     ctx = _build_gr00t_ctx(config, resolved_grpc, "gr00t-gr1")
     env = Environment(loader=FileSystemLoader(str(TEMPLATES_DIR)), keep_trailing_newline=True)  # nosec B701 - shell script template, autoescape not applicable
     return env.get_template("gr00t-gr1-userdata.sh.j2").render(**ctx)
+
+
+def generate_gr00t_g1(config: dict, resolved_grpc: str, resolved_vpc: str, dry_run: bool) -> str:
+    ctx = _build_gr00t_ctx(config, resolved_grpc, "gr00t-g1")
+    env = Environment(loader=FileSystemLoader(str(TEMPLATES_DIR)), keep_trailing_newline=True)  # nosec B701 - shell script template, autoescape not applicable
+    return env.get_template("gr00t-g1-userdata.sh.j2").render(**ctx)
 
 
 def generate_openvla_oft(config: dict, libero_suite: str, dry_run: bool) -> str:
@@ -308,7 +315,7 @@ def generate_pi(config: dict, resolved_vpc: str, resolved_nlb: str, dry_run: boo
 
 def main():
     parser = argparse.ArgumentParser(description="vla-simulator UserData 스크립트 생성")
-    parser.add_argument("--vla", required=True, choices=["gr00t", "gr00t-gr1", "pi", "openvla-oft", "lap", "openarm-isaac", "openarm-lift-act"], help="VLA 모델")
+    parser.add_argument("--vla", required=True, choices=["gr00t", "gr00t-gr1", "gr00t-g1", "pi", "openvla-oft", "lap", "openarm-isaac", "openarm-lift-act"], help="VLA 모델")
     parser.add_argument(
         "--config", default=str(BASE_DIR / "simulator-config.yaml"),
         help="공통 설정 파일 경로 (기본: simulator-config.yaml)",
@@ -340,6 +347,8 @@ def main():
         rendered = generate_gr00t(config, args.resolved_grpc, args.resolved_vpc, args.dry_run)
     elif args.vla == "gr00t-gr1":
         rendered = generate_gr00t_gr1(config, args.resolved_grpc, args.resolved_vpc, args.dry_run)
+    elif args.vla == "gr00t-g1":
+        rendered = generate_gr00t_g1(config, args.resolved_grpc, args.resolved_vpc, args.dry_run)
     elif args.vla == "openvla-oft":
         rendered = generate_openvla_oft(config, args.libero_suite, args.dry_run)
     elif args.vla == "lap":

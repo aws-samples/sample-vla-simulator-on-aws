@@ -1,6 +1,6 @@
 # VLA Simulator — 1-Click VLA Simulation on AWS
 
-Run Vision-Language-Action (VLA) robot simulation workloads on AWS GPU instances with a single command. Supports NVIDIA GR00T N1.7, GR00T N1.6 (GR1 humanoid), π0.5 (openpi), OpenVLA-OFT, and LAP-3B — plus an OpenArm Lift-Cube target in Isaac Lab for scripted ACT demo collection.
+Run Vision-Language-Action (VLA) robot simulation workloads on AWS GPU instances with a single command. Supports NVIDIA GR00T N1.7, GR00T N1.6 (GR1 humanoid and Unitree G1 whole-body loco-manipulation), π0.5 (openpi), OpenVLA-OFT, and LAP-3B — plus an OpenArm Lift-Cube target in Isaac Lab for scripted ACT demo collection.
 
 > See [Showcase — VLA Rollouts](#showcase--vla-rollouts) for sample rollouts across the trained policies and the OpenArm scripted collection run, spanning a range of LIBERO / RoboCasa verbs.
 
@@ -8,7 +8,7 @@ Run Vision-Language-Action (VLA) robot simulation workloads on AWS GPU instances
 
 | Feature | Detail |
 |---------|--------|
-| **Models** | GR00T N1.7-LIBERO, GR00T N1.6-3B (GR1), π0.5 (pi05_libero), OpenVLA-OFT (LIBERO-10), LAP-3B (LIBERO-Spatial) |
+| **Models** | GR00T N1.7-LIBERO, GR00T N1.6-3B (GR1), GR00T N1.6-G1 (Unitree G1 loco-manip), π0.5 (pi05_libero), OpenVLA-OFT (LIBERO-10), LAP-3B (LIBERO-Spatial) |
 | **Simulation** | LIBERO / RoboCasa (robosuite + MuJoCo, headless EGL); Isaac Lab (OpenArm Lift-Cube collection) |
 | **Deploy** | AWS CDK + EC2 GPU (g6/g5, us-east-1; OpenArm needs a 4-GPU `.12xl`) |
 | **Results** | S3 (MP4 video + summary) + SNS email |
@@ -20,6 +20,7 @@ Run Vision-Language-Action (VLA) robot simulation workloads on AWS GPU instances
 |---------|------------------|-------|----------------|-------|-------|
 | `gr00t` | — | GR00T N1.7-LIBERO | LIBERO-10 kitchen tasks | Franka Panda (7-DOF) | `GR00T-Demo` |
 | `gr00t-gr1` | — | GR00T N1.6-3B | RoboCasa GR1 tabletop tasks | Fourier GR1 humanoid (22-DOF) | `GR00T-GR1-Demo` |
+| `gr00t-g1` | — | GR00T N1.6-G1 (community re-finetune) | GR00T-WholeBodyControl loco-manip (GEAR WBC + MuJoCo) | Unitree G1 humanoid (whole-body) | `GR00T-G1-Demo` |
 | `pi` | — | π0.5 (pi05_libero) | LIBERO spatial/object | Franka Panda (7-DOF) | `Pi-Demo` |
 | `openvla-oft` | `spatial` | OpenVLA-OFT-7B (LIBERO-Spatial fine-tune) | LIBERO-Spatial | Franka Panda (7-DOF) | `OpenVLA-OFT-Spatial-Demo` |
 | `openvla-oft` | `object` | OpenVLA-OFT-7B (LIBERO-Object fine-tune) | LIBERO-Object | Franka Panda (7-DOF) | `OpenVLA-OFT-Object-Demo` |
@@ -72,6 +73,17 @@ The GR1 humanoid is a different embodiment from Franka Panda — two arms, waist
 |---|---|
 | ![GR00T-GR1 — plate to bowl (success)](docs/showcase/gr00t-gr1/posttrain-pnp-plate-to-bowl-success.gif) | ![GR00T-GR1 — can to drawer (failure, embodiment OOD)](docs/showcase/gr00t-gr1/pnp-can-to-drawer-failure.gif) |
 | MP4: [`gr00t-gr1/posttrain-pnp-plate-to-bowl-success.mp4`](docs/showcase/gr00t-gr1/posttrain-pnp-plate-to-bowl-success.mp4) | MP4: [`gr00t-gr1/pnp-can-to-drawer-failure.mp4`](docs/showcase/gr00t-gr1/pnp-can-to-drawer-failure.mp4) |
+
+#### `gr00t-g1` — GR00T N1.6 on Unitree G1 (whole-body loco-manipulation)
+
+This is **whole-body loco-manipulation**, not tabletop: the dual-view clips show the G1 humanoid grasp the apple, then *walk left* on its own legs (GR00T-WholeBodyControl Balance/Walk ONNX policies) to a second table and place it on the plate — task `pick up the apple, walk left and place the apple on the plate` (`LMPnPAppleToPlateDC_G1_gear_wbc`). The left pane is the ego/close view, the right is third-person.
+
+> **Checkpoint note.** NVIDIA published no N1.7 Unitree G1 checkpoint, and the only public N1.6 G1 checkpoint (`nvidia/GR00T-N1.6-G1-PnPAppleToPlate`) does **not** reproduce its stated success rate under the released evaluation command — it scores 0/10, matching multiple open Isaac-GR00T issues with no upstream fix. The only public artifact that reproduces the task is a community re-finetune, [`cloudwalk-research/GR00T-N1.6-G1-PnPAppleToPlate`](https://huggingface.co/cloudwalk-research/GR00T-N1.6-G1-PnPAppleToPlate) (same GR00T N1.6 architecture, drop-in compatible), which scores **`success_rate = 0.3` (3/10)** here. `g6.12xlarge`, `n_envs=1`, validated 2026-06-15.
+
+| Success — apple picked, walked left, placed on plate | Failure — grasp + walk OK, placement misses |
+|---|---|
+| ![GR00T-G1 — loco-manip apple to plate (success)](docs/showcase/gr00t-g1/loco-manip-apple-to-plate-success.gif) | ![GR00T-G1 — loco-manip apple to plate (failure)](docs/showcase/gr00t-g1/loco-manip-apple-to-plate-failure.gif) |
+| MP4: [`gr00t-g1/loco-manip-apple-to-plate-success.mp4`](docs/showcase/gr00t-g1/loco-manip-apple-to-plate-success.mp4) | MP4: [`gr00t-g1/loco-manip-apple-to-plate-failure.mp4`](docs/showcase/gr00t-g1/loco-manip-apple-to-plate-failure.mp4) |
 
 #### `gr00t` — GR00T N1.7 on LIBERO-10 (Franka Panda)
 
@@ -153,6 +165,9 @@ python deploy.py --vla gr00t --email you@example.com
 # GR00T N1.6 + GR1 humanoid — RoboCasa tabletop tasks (~90 min)
 python deploy.py --vla gr00t-gr1 --email you@example.com
 
+# GR00T N1.6 + Unitree G1 — whole-body loco-manipulation (GR00T-WholeBodyControl, ~20-30 min)
+python deploy.py --vla gr00t-g1 --email you@example.com
+
 # π0.5 — LIBERO spatial + object tasks (~4 hrs)
 python deploy.py --vla pi --email you@example.com
 
@@ -183,6 +198,9 @@ aws logs tail /gr00t/userdata --follow --region us-east-1
 
 # GR00T N1.6 + GR1 logs
 aws logs tail /gr00t-gr1/userdata --follow --region us-east-1
+
+# GR00T N1.6 + Unitree G1 logs
+aws logs tail /gr00t-g1/userdata --follow --region us-east-1
 
 # π0.5 logs
 aws logs tail /pi/userdata --follow --region us-east-1
@@ -218,6 +236,7 @@ Each `task-N/` folder contains:
 ```bash
 python destroy.py --vla gr00t
 python destroy.py --vla gr00t-gr1
+python destroy.py --vla gr00t-g1
 python destroy.py --vla pi
 python destroy.py --vla openvla-oft                         # default suite (10)
 python destroy.py --vla openvla-oft --libero-suite spatial  # non-default suite
@@ -236,6 +255,7 @@ The S3 results bucket is **retained** after stack deletion to preserve simulatio
 | `gr00t` | KITCHEN_SCENE4 (black bowl in drawer) | ~90–100% | validated 2026-04-27 |
 | `gr00t-gr1` | PosttrainPnPNovelFromPlateToBowlSplitA (GR1) | ~80% | validated 2026-04-12 |
 | `gr00t-gr1` | PnPCanToDrawerClose (GR1) | 0% (pre-trained N1.6 not supported) | validated 2026-04-12 |
+| `gr00t-g1` | LMPnPAppleToPlateDC (G1 loco-manip, community re-finetune) | 30% (3/10) | validated 2026-06-15 — `nvidia/...` checkpoint scores 0%; `cloudwalk-research` re-finetune used |
 | `pi` | libero_object | ~80–94% | validated 2026-04-27 |
 | `pi` | libero_spatial | ~85–95% | validated 2026-04-27 |
 | `openvla-oft --libero-suite spatial` | libero_spatial | 97.6% (paper Table I) | validated 2026-06-01 — 0.92 (46/50, 5 trials/task × 10 tasks, g6.xlarge); within paper ±5%p band at n=50 |
@@ -247,6 +267,7 @@ The S3 results bucket is **retained** after stack deletion to preserve simulatio
 **Validated results (us-east-1, g6.12xlarge / g5.xlarge / g6.xlarge):**
 - GR00T N1.7: KITCHEN_SCENE3 = 1.0 (5/5), KITCHEN_SCENE4 = 1.0 (3/3)
 - GR00T N1.6 + GR1: PosttrainPnP = 0.8 (4/5), PnPCanToDrawer = 0.0 (pre-trained model limitation)
+- GR00T N1.6 + Unitree G1 (whole-body loco-manip): LMPnPAppleToPlateDC = 0.3 (3/10, `n_envs=1`, g6.12xlarge, us-west-2) — `cloudwalk-research` community re-finetune; the `nvidia/GR00T-N1.6-G1-PnPAppleToPlate` checkpoint scores 0/10 under the same command (matches open Isaac-GR00T issues, no upstream fix)
 - π0.5: libero_object = 0.94 (47/50)
 - OpenVLA-OFT: libero_10 = 1.0 (10/10 at 1 trial/task, g6.xlarge)
 - OpenVLA-OFT: libero_spatial = 0.92 (46/50, 5 trials/task × 10 tasks, g6.xlarge) — paper Table I = 97.6%; the gap (5.6%p) is within sampling noise at n=50 (SE ≈ 3.8%p). 8/10 tasks at 5/5; misses concentrated on `on_the_ramekin` (2/5) and `next_to_the_plate` (4/5)
@@ -298,6 +319,7 @@ vla-simulator/
 ├── models/
 │   ├── gr00t.yaml            # GR00T N1.7 config
 │   ├── gr00t-gr1.yaml        # GR00T N1.6 + GR1 humanoid config
+│   ├── gr00t-g1.yaml         # GR00T N1.6 + Unitree G1 whole-body loco-manip config
 │   ├── pi.yaml               # π0.5 config
 │   ├── openvla-oft.yaml      # OpenVLA-OFT config (per-suite checkpoints)
 │   └── lap.yaml              # LAP-3B config
@@ -319,6 +341,7 @@ vla-simulator/
 └── templates/
     ├── gr00t-userdata.sh.j2        # Jinja2 template for GR00T UserData
     ├── gr00t-gr1-userdata.sh.j2    # GR00T N1.6 + GR1 humanoid
+    ├── gr00t-g1-userdata.sh.j2     # GR00T N1.6 + Unitree G1 (GR00T-WholeBodyControl loco-manip)
     ├── pi-userdata.sh.j2           # π0.5 (Docker Compose)
     ├── openvla-oft-userdata.sh.j2  # OpenVLA-OFT (single conda env)
     ├── lap-userdata.sh.j2          # LAP-3B (uv 2-venv: JAX policy + LIBERO sim)

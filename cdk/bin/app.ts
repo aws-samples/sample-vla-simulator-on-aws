@@ -23,9 +23,9 @@ const app = new cdk.App();
 const region = app.node.tryGetContext('region') ?? 'ap-northeast-2';
 const vla: string = app.node.tryGetContext('vla');
 
-if (!vla || !['gr00t', 'gr00t-gr1', 'pi', 'openvla-oft', 'lap', 'openarm-isaac', 'openarm-lift-act'].includes(vla)) {
+if (!vla || !['gr00t', 'gr00t-gr1', 'gr00t-g1', 'pi', 'openvla-oft', 'lap', 'openarm-isaac', 'openarm-lift-act'].includes(vla)) {
   throw new Error(
-    'CDK context "vla" is required. Pass -c vla=gr00t, -c vla=gr00t-gr1, -c vla=pi, -c vla=openvla-oft, -c vla=lap, -c vla=openarm-isaac, or -c vla=openarm-lift-act.\n' +
+    'CDK context "vla" is required. Pass -c vla=gr00t, -c vla=gr00t-gr1, -c vla=gr00t-g1, -c vla=pi, -c vla=openvla-oft, -c vla=lap, -c vla=openarm-isaac, or -c vla=openarm-lift-act.\n' +
     'Use deploy.py which sets this automatically.',
   );
 }
@@ -48,6 +48,7 @@ const oftStackName = (suite: string): string =>
 const stackNameMap: Record<string, string> = {
   'gr00t':       'GR00T-Demo',
   'gr00t-gr1':   'GR00T-GR1-Demo',
+  'gr00t-g1':    'GR00T-G1-Demo',
   'pi':          'Pi-Demo',
   'openvla-oft': oftStackName(liberoSuite),
   'lap':         'LAP-Demo',
@@ -64,6 +65,7 @@ const oftDescription = (suite: string): string => {
 const descriptionMap: Record<string, string> = {
   'gr00t':       'GR00T N1.7 + LIBERO (Franka Panda)',
   'gr00t-gr1':   'GR00T N1.6 + RoboCasa (Fourier GR1 humanoid)',
+  'gr00t-g1':    'GR00T N1.6 + WBC loco-manipulation (Unitree G1 humanoid)',
   'pi':          'π0.5',
   'openvla-oft': oftDescription(liberoSuite),
   'lap':         'LAP-3B + LIBERO-Spatial (Franka Panda, JAX policy server + sim client)',

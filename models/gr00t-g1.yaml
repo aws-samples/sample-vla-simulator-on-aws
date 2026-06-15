@@ -1,0 +1,66 @@
+# GR00T N1.6 + Unitree G1 Humanoid + GR00T-WholeBodyControl (loco-manipulation) configuration
+# Checkpoint: cloudwalk-research/GR00T-N1.6-G1-PnPAppleToPlate (community re-finetune) + Unitree G1 + gr00tlocomanip_g1_sim
+# Sim stack: NVlabs/GR00T-WholeBodyControl (GEAR WBC) + forked robosuite (leo/support_g1_locomanip) + MuJoCo
+#
+# Why N1.6 (not N1.7): NVIDIA released no N1.7 Unitree G1 checkpoint. The ONLY public G1 GR00T
+# checkpoint family is N1.6. G1 (UNITREE_G1) is a POSTTRAIN embodiment tag — the base model gives
+# ~0% without this fine-tune (same as the GR1 case).
+# This target is WHOLE-BODY loco-manipulation (action includes base_height_command + navigate_command),
+# NOT tabletop manipulation. N1.7 + G1 is a separate fine-tune track (see session roadmap Step 2).
+#
+# Why cloudwalk-research (not nvidia/...): the NVIDIA-published checkpoint does NOT reproduce its
+# stated ~58% — it scores 0% with the official command, matching Isaac-GR00T issues #574/#590/#661
+# (no NVIDIA fix). The ONLY public artifact that reproduces ~50% under the same protocol is the
+# cloudwalk-research re-finetune (5/10 verified, drop-in compatible: same config/processor/statistics/
+# modality, 2-shard safetensors). Same GR00T N1.6 architecture, G1-task community-tuned weights.
+
+model:
+  id: gr00t-g1
+  version: "N1.6-G1-PnPAppleToPlate"
+  hf_repo: "cloudwalk-research/GR00T-N1.6-G1-PnPAppleToPlate"      # community re-finetune (nvidia/... published ckpt scores 0%, unreproducible)
+  hf_subfolder: ""                                                  # Full checkpoint (not a fine-tuned subfolder)
+  # Version pinning — update when intentionally upgrading
+  # isaac_groot_commit: git ls-remote https://github.com/NVIDIA/Isaac-GR00T.git HEAD
+  isaac_groot_commit: "77866395d6ab601a770f95cf78cf51d5847f6fa1"   # Validated: 2026-04-06 (same as gr00t-gr1)
+  # uv: https://github.com/astral-sh/uv/releases/latest
+  uv_version: "0.11.6"                                             # Validated: 2026-04-10
+  # hf_model_revision: huggingface.co/api/models/cloudwalk-research/GR00T-N1.6-G1-PnPAppleToPlate → sha
+  hf_model_revision: "2a5b61cc7660bdef4cf17ad18dc5dd97f13e4ce5"    # Pinned: 2026-06-15 (cloudwalk re-finetune, verified ~50%)
+  # robosuite fork (cloned by setup_GR00T_WholeBodyControl.sh from xieleo5/robosuite @ leo/support_g1_locomanip).
+  # git ls-remote https://github.com/xieleo5/robosuite.git leo/support_g1_locomanip
+  robosuite_commit: "b6aa4a53939ba872382eb32cb8948af0b5b79cdd"     # Pinned: 2026-06-15 (== branch HEAD; freezes vs drift)
+
+instance:
+  # WBC rollout uses 1 MuJoCo env (CPU/EGL render) + 1 CUDA policy server (n_envs=1, see tasks note).
+  # 12xlarge tier mirrors gr00t-gr1 and is the verified-working size (prior deploy ~17.5min); kept for fidelity.
+  preferred: [g6.12xlarge, g5.12xlarge, g6.xlarge, g5.xlarge]
+  ebs_gb: 500             # > gr00t-gr1 (400): WBC Git-LFS assets + base + fine-tuned checkpoint + video temp
+  ebs_gb_bridge: 500      # Bridge mode: still needs sim env (no model download saving)
+  creationpolicy_timeout: PT210M  # WBC install ~25min (submodule+LFS+3 editable) + ckpt DL + sim ~60-90min + buffer
+
+# Validated task (GR00T-WholeBodyControl released task w/ matching checkpoint)
+# ┌──────────────────────────────────────────────────────┬───────────────────────────────┬──────────────┐
+# │ Task                                                  │ Notes                         │ Result       │
+# ├──────────────────────────────────────────────────────┼───────────────────────────────┼──────────────┤
+# │ LMPnPAppleToPlateDC_G1_gear_wbc                       │ loco-manip pick-and-place     │ ~50% (±15%)  │
+# └──────────────────────────────────────────────────────┴───────────────────────────────┴──────────────┘
+# Result is for the cloudwalk-research re-finetune (5/10 verified @ n_envs=1). The nvidia/... ckpt = 0%.
+# G1 rollout knobs differ from GR1: max_episode_steps=1440 (2× GR1), n_action_steps=20.
+# n_envs=1 (not 5): rollout_policy.py @ 7786639 has a seedless env.reset() → n_envs>1 gives seed-lockstep
+# duplicate scenes (fixed upstream in 3df8b38). cloudwalk's ~50% was verified at n_envs=1; keep it for fidelity.
+tasks:
+  - env_name: gr00tlocomanip_g1_sim/LMPnPAppleToPlateDC_G1_gear_wbc
+    embodiment: UNITREE_G1
+    n_episodes: 10
+    n_envs: 1
+    max_episode_steps: 1440
+    n_action_steps: 20
+    video_fps: 20
+    video_crf: 22
+    steps_per_render: 2
+
+# Bridge mode — vla-hub ECS gRPC endpoint (leave empty for local mode)
+# G1 WBC bridge not yet validated → local mode only.
+bridge:
+  remote_grpc_endpoint: ""  # local mode by default
+  vpc_id: ""

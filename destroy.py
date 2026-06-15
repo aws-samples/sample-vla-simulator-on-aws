@@ -36,6 +36,7 @@ BASE_DIR = Path(__file__).parent
 STACK_NAMES = {
     "gr00t": "GR00T-Demo",
     "gr00t-gr1": "GR00T-GR1-Demo",
+    "gr00t-g1": "GR00T-G1-Demo",
     "pi": "Pi-Demo",
     "openvla-oft": "OpenVLA-OFT-Demo",   # default suite (10); non-default via oft_stack_name()
     "lap": "LAP-Demo",
@@ -54,7 +55,7 @@ def _validate_region(region: str) -> str:
 def main():
     parser = argparse.ArgumentParser(description="vla-simulator Stack Destroy")
     parser.add_argument("--vla", required=True,
-                        choices=["gr00t", "gr00t-gr1", "pi", "openvla-oft", "lap", "openarm-isaac", "openarm-lift-act"],
+                        choices=["gr00t", "gr00t-gr1", "gr00t-g1", "pi", "openvla-oft", "lap", "openarm-isaac", "openarm-lift-act"],
                         help="VLA model stack to destroy")
     parser.add_argument("--region", "-r", metavar="REGION",
                         help="AWS region (overrides simulator-config.yaml)")
