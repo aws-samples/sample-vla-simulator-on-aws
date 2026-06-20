@@ -146,38 +146,60 @@ deploy.py
 
 ---
 
-## Prerequisites
+## Quick Start
+
+A single CLI (`vlasim.py`) wraps the whole setup into three commands. It runs on
+the standard library alone, so `doctor` works on a fresh host **before** any
+dependencies are installed.
 
 ```bash
-# Python deps
-pip install -r requirements.txt   # boto3, pyyaml
+# 1. See what's missing (read-only — safe to run anytime)
+python vlasim.py doctor
 
-# Node / CDK
-npm install -g aws-cdk
-cd cdk && npm install && cd ..
+# 2. One-time setup: installs Python + CDK deps and fills simulator-config.yaml
+python vlasim.py init --email you@example.com
+#   add --bootstrap to also run `cdk bootstrap` for your account/region
 
-# AWS credentials (profile or env vars)
-aws configure   # or: export AWS_PROFILE=...
-aws sts get-caller-identity
+# 3. Deploy (runs doctor as a preflight first, then deploy.py)
+python vlasim.py deploy --vla gr00t-g1
 ```
+
+`doctor` checks: Python/Node/CDK versions and installs, AWS credentials, region
+support, CDK bootstrap, GPU On-Demand vCPU quota (per target), and `notify_email`.
+It exits non-zero if any check **FAILs**, so the `deploy` preflight stops a missing
+quota or un-bootstrapped account in seconds rather than mid-deploy (idle GPU billing).
+
+```
+$ python vlasim.py doctor --vla gr00t-g1
+  [ OK ] Python 3.12.1 (>= 3.10)
+  [ OK ] Node v22.22.1
+  [ OK ] AWS credentials valid (account ..., region us-east-1)
+  [ OK ] CDK bootstrap present in us-east-1
+  [ OK ] On-Demand G/VR vCPU quota = 768 in us-east-1 (>= 4 for g6.xlarge ...)
+  [FAIL] notify_email is still the placeholder
+         -> run: python vlasim.py init --email YOU@EXAMPLE.COM
+```
+
+`deploy` and `destroy` forward every flag to `deploy.py` / `destroy.py` unchanged
+(`--bridge`, `--collect`, `--libero-suite`, `--region`, …). Use `--skip-doctor` to
+bypass the deploy preflight. Run `python vlasim.py deploy --help` for the full list.
 
 Supported regions: `us-east-1`, `us-west-2`, `ap-northeast-1`, `ap-northeast-2`, `eu-central-1`
 
+> **Manual setup** (equivalent to `init`, if you prefer to run the steps yourself):
+> ```bash
+> pip install -r requirements.txt          # boto3, pyyaml, jinja2
+> cd cdk && npm install && cd ..           # CDK deps (aws-cdk is pinned in cdk/package.json)
+> aws configure                            # or: export AWS_PROFILE=...
+> # then edit deployment.region / notify_email in simulator-config.yaml
+> ```
+
 ---
 
-## Quick Start
+## Deploy Targets
 
-### 1. Configure
-
-Edit `simulator-config.yaml`:
-
-```yaml
-deployment:
-  region: us-east-1
-  notify_email: you@example.com
-```
-
-### 2. Deploy
+`vlasim deploy` / `vlasim destroy` forward to `deploy.py` / `destroy.py`. The full
+per-target invocations (all also runnable directly as `python deploy.py ...`):
 
 ```bash
 # GR00T N1.7 — LIBERO kitchen tasks (~120 min)
@@ -215,7 +237,9 @@ python deploy.py --vla openarm-lift-act --email you@example.com
 
 On first deploy you will receive an SNS subscription confirmation email — **click the link** to enable notifications.
 
-### 3. Monitor (optional)
+---
+
+## Monitor (optional)
 
 ```bash
 # GR00T N1.7 logs
@@ -240,7 +264,9 @@ aws logs tail /lap/userdata --follow --region us-east-1
 aws logs tail /rldx/userdata --follow --region us-east-1
 ```
 
-### 4. Results
+---
+
+## Results
 
 When simulation finishes you receive an SNS email with download instructions:
 
@@ -259,9 +285,12 @@ Each `task-N/` folder contains:
 - `summary.txt` — `success_rate`, `suite`, `num_episodes_per_task`
 - `compose.log` / `userdata.log` — execution logs
 
-### 5. Cleanup
+---
+
+## Cleanup
 
 ```bash
+python vlasim.py destroy --vla gr00t-g1   # or, equivalently:
 python destroy.py --vla gr00t
 python destroy.py --vla gr00t-gr1
 python destroy.py --vla gr00t-g1
@@ -344,6 +373,7 @@ The S3 results bucket is **retained** after stack deletion to preserve simulatio
 
 ```
 vla-simulator/
+├── vlasim.py                 # CLI front end: doctor / init / deploy / destroy
 ├── simulator-config.yaml     # Shared deployment settings
 ├── docs/
 │   └── showcase/             # Sample rollout MP4 + GIF preview per VLA policy
