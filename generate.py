@@ -13,6 +13,7 @@ generate.py — model yaml + simulator-config.yaml 읽어 assets/userdata/{vla}.
     python generate.py --vla pi          [--resolved-vpc vpc-xxx --resolved-nlb host:port]
     python generate.py --vla openvla-oft [--config simulator-config.yaml] [--dry-run]
     python generate.py --vla lap         [--config simulator-config.yaml] [--dry-run]
+    python generate.py --vla rldx        [--config simulator-config.yaml] [--dry-run]
     python generate.py --vla openarm-isaac [--config simulator-config.yaml] [--dry-run]
     python generate.py --vla openarm-lift-act [--config simulator-config.yaml] [--dry-run]
 """
@@ -20,6 +21,7 @@ generate.py — model yaml + simulator-config.yaml 읽어 assets/userdata/{vla}.
 import argparse
 import base64
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -32,6 +34,21 @@ TEMPLATES_DIR = BASE_DIR / "templates"
 # OpenVLA-OFT supported LIBERO suites (`long` is an alias for `10`).
 OFT_LIBERO_SUITES = ("spatial", "object", "goal", "10", "long")
 OFT_DEFAULT_SUITE = "10"
+
+
+def _tasks_json_for_bash(tasks: list) -> str:
+    """Serialize tasks to JSON, then bash-escape for embedding in a single-quoted
+    string (templates use `TASKS_JSON='{{ tasks_json }}'`).
+
+    Inside bash single quotes the ONLY metacharacter is `'` itself, so replacing
+    each `'` with the canonical `'\\''` (close-quote, literal quote, reopen-quote)
+    makes ANY free-text task description safe. This is a no-op (byte-identical
+    output) for descriptions without apostrophes. Without it, an apostrophe in a
+    task description (e.g. "gr00t's") prematurely terminates the bash string →
+    UserData syntax error → script aborts before the rollout loop → no cfn_signal
+    → stack hangs on WaitCondition until timeout.
+    """
+    return json.dumps(tasks, ensure_ascii=False).replace("'", "'\\''")
 
 
 def normalise_libero_suite(suite: str) -> str:
@@ -68,7 +85,7 @@ def _build_gr00t_ctx(config: dict, resolved_grpc: str, model_id: str) -> dict:
         print(f"[error] models/{model_id}.yaml에 tasks 항목이 없습니다.", file=sys.stderr)
         sys.exit(1)
 
-    tasks_json = json.dumps(tasks, ensure_ascii=False)
+    tasks_json = _tasks_json_for_bash(tasks)
     deployment = config.get("deployment", {})
     model = config.get("model", {})
     default_hf_repo = "nvidia/GR00T-N1.7-3B" if model_id == "gr00t" else "nvidia/GR00T-N1.6-3B"
@@ -178,7 +195,7 @@ def generate_openvla_oft(config: dict, libero_suite: str, dry_run: bool) -> str:
         print(f"[error] models/openvla-oft.yaml에 suite '{suite}'의 tasks가 없습니다.", file=sys.stderr)
         sys.exit(1)
 
-    tasks_json = json.dumps(tasks, ensure_ascii=False)
+    tasks_json = _tasks_json_for_bash(tasks)
     deployment = config.get("deployment", {})
 
     ctx = {
@@ -198,13 +215,48 @@ def generate_openvla_oft(config: dict, libero_suite: str, dry_run: bool) -> str:
     return env.get_template("openvla-oft-userdata.sh.j2").render(**ctx)
 
 
+def generate_rldx(config: dict, dry_run: bool) -> str:
+    """RLDX-1 (RLWRLD): MSAT/Qwen3-VL-8B × LIBERO. Local mode only.
+
+    Mirrors the server+client two-venv topology RLWRLD ships in run_scripts/eval/libero/
+    (verified in Phase 0): main .venv ZeroMQ policy server + libero_uv venv sim client.
+    No bridge assets (vla-hub serving deferred — fused-kernel guardrail conflict).
+    """
+    tasks = config.get("tasks", [])
+    if not tasks:
+        print("[error] models/rldx.yaml에 tasks 항목이 없습니다.", file=sys.stderr)
+        sys.exit(1)
+
+    tasks_json = _tasks_json_for_bash(tasks)
+    deployment = config.get("deployment", {})
+    model = config.get("model", {})
+
+    ctx = {
+        "tasks_json": tasks_json,
+        "tasks": tasks,
+        "deployment": deployment,
+        "rldx_commit": model.get("rldx_commit", "").strip(),
+        "hf_repo": model.get("hf_repo", "RLWRLD/RLDX-1-FT-LIBERO"),
+        "hf_model_revision": model.get("hf_model_revision", ""),
+        "backbone_hf_repo": model.get("backbone_hf_repo", ""),
+        "embodiment_tag": model.get("embodiment_tag", "GENERAL_EMBODIMENT"),
+        "compile": str(model.get("compile", "") or "").strip(),
+        "max_episode_steps": model.get("max_episode_steps", 720),
+        "n_action_steps": model.get("n_action_steps", 8),
+        "n_envs": model.get("n_envs", 1),
+    }
+
+    env = Environment(loader=FileSystemLoader(str(TEMPLATES_DIR)), keep_trailing_newline=True)  # nosec B701 - shell script template
+    return env.get_template("rldx-userdata.sh.j2").render(**ctx)
+
+
 def generate_lap(config: dict, resolved_nlb: str, dry_run: bool) -> str:
     tasks = config.get("tasks", [])
     if not tasks:
         print("[error] models/lap.yaml에 tasks 항목이 없습니다.", file=sys.stderr)
         sys.exit(1)
 
-    tasks_json = json.dumps(tasks, ensure_ascii=False)
+    tasks_json = _tasks_json_for_bash(tasks)
     deployment = config.get("deployment", {})
     model = config.get("model", {})
 
@@ -241,7 +293,7 @@ def generate_openarm_isaac(config: dict, dry_run: bool) -> str:
         print("[error] models/openarm-isaac.yaml에 tasks 항목이 없습니다.", file=sys.stderr)
         sys.exit(1)
 
-    tasks_json = json.dumps(tasks, ensure_ascii=False)
+    tasks_json = _tasks_json_for_bash(tasks)
     deployment = config.get("deployment", {})
     model = config.get("model", {})
 
@@ -328,7 +380,7 @@ def generate_pi(config: dict, resolved_vpc: str, resolved_nlb: str, dry_run: boo
         print("[error] models/pi.yaml에 tasks 항목이 없습니다.", file=sys.stderr)
         sys.exit(1)
 
-    tasks_json = json.dumps(tasks, ensure_ascii=False)
+    tasks_json = _tasks_json_for_bash(tasks)
     deployment = config.get("deployment", {})
     model = config.get("model", {})
 
@@ -350,7 +402,7 @@ def generate_pi(config: dict, resolved_vpc: str, resolved_nlb: str, dry_run: boo
 
 def main():
     parser = argparse.ArgumentParser(description="vla-simulator UserData 스크립트 생성")
-    parser.add_argument("--vla", required=True, choices=["gr00t", "gr00t-gr1", "gr00t-g1", "pi", "openvla-oft", "lap", "openarm-isaac", "openarm-lift-act"], help="VLA 모델")
+    parser.add_argument("--vla", required=True, choices=["gr00t", "gr00t-gr1", "gr00t-g1", "pi", "openvla-oft", "lap", "rldx", "openarm-isaac", "openarm-lift-act"], help="VLA 모델")
     parser.add_argument(
         "--config", default=str(BASE_DIR / "simulator-config.yaml"),
         help="공통 설정 파일 경로 (기본: simulator-config.yaml)",
@@ -392,6 +444,8 @@ def main():
         rendered = generate_openvla_oft(config, args.libero_suite, args.dry_run)
     elif args.vla == "lap":
         rendered = generate_lap(config, args.resolved_nlb, args.dry_run)
+    elif args.vla == "rldx":
+        rendered = generate_rldx(config, args.dry_run)
     elif args.vla == "openarm-isaac":
         rendered = generate_openarm_isaac(config, args.dry_run)
     elif args.vla == "openarm-lift-act":
@@ -410,6 +464,24 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
     dest = out_dir / f"{args.vla}.sh"
     dest.write_text(rendered)
+
+    # Syntax-validate the rendered UserData before it can reach a deploy. A bash
+    # syntax error (e.g. an apostrophe in a task description breaking a single-quoted
+    # string) otherwise only surfaces on the EC2 instance: the script aborts before
+    # sending cfn_signal and the stack hangs on its WaitCondition until timeout
+    # (idle GPU billing). `bash -n` catches it here, loudly, at generation time.
+    bash_check = subprocess.run(  # nosec B603,B607 - hardcoded command, dest is our own output
+        ["bash", "-n", str(dest)],
+        capture_output=True,
+        text=True,
+    )
+    if bash_check.returncode != 0:
+        print(f"[error] Generated {dest} has a bash syntax error:", file=sys.stderr)
+        print(bash_check.stderr.strip(), file=sys.stderr)
+        print("  Most common cause: an apostrophe or unescaped quote in a task "
+              "description in models/{vla}.yaml.", file=sys.stderr)
+        sys.exit(1)
+
     print(f"생성 완료: {dest}")
 
 

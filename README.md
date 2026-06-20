@@ -1,6 +1,6 @@
 # VLA Simulator — 1-Click VLA Simulation on AWS
 
-Run Vision-Language-Action (VLA) robot simulation workloads on AWS GPU instances with a single command. Supports NVIDIA GR00T N1.7, GR00T N1.6 (GR1 humanoid and Unitree G1 whole-body loco-manipulation), π0.5 (openpi), OpenVLA-OFT, and LAP-3B — plus an OpenArm Lift-Cube target in Isaac Lab for scripted ACT demo collection.
+Run Vision-Language-Action (VLA) robot simulation workloads on AWS GPU instances with a single command. Supports NVIDIA GR00T N1.7, GR00T N1.6 (GR1 humanoid and Unitree G1 whole-body loco-manipulation), π0.5 (openpi), OpenVLA-OFT, LAP-3B, and RLDX-1 (RLWRLD) — plus an OpenArm Lift-Cube target in Isaac Lab for scripted ACT demo collection.
 
 > See [Showcase — VLA Rollouts](#showcase--vla-rollouts) for sample rollouts across the trained policies and the OpenArm scripted collection run, spanning a range of LIBERO / RoboCasa verbs.
 
@@ -8,7 +8,7 @@ Run Vision-Language-Action (VLA) robot simulation workloads on AWS GPU instances
 
 | Feature | Detail |
 |---------|--------|
-| **Models** | GR00T N1.7-LIBERO, GR00T N1.6-3B (GR1), GR00T N1.6-G1 (Unitree G1 loco-manip), π0.5 (pi05_libero), OpenVLA-OFT (LIBERO-10), LAP-3B (LIBERO-Spatial) |
+| **Models** | GR00T N1.7-LIBERO, GR00T N1.6-3B (GR1), GR00T N1.6-G1 (Unitree G1 loco-manip), π0.5 (pi05_libero), OpenVLA-OFT (LIBERO-10), LAP-3B (LIBERO-Spatial), RLDX-1 (RLWRLD, LIBERO) |
 | **Simulation** | LIBERO / RoboCasa (robosuite + MuJoCo, headless EGL); Isaac Lab (OpenArm Lift-Cube collection) |
 | **Deploy** | AWS CDK + EC2 GPU (g6/g5, us-east-1; OpenArm needs a 4-GPU `.12xl`) |
 | **Results** | S3 (MP4 video + summary) + SNS email |
@@ -27,7 +27,10 @@ Run Vision-Language-Action (VLA) robot simulation workloads on AWS GPU instances
 | `openvla-oft` | `goal` | OpenVLA-OFT-7B (LIBERO-Goal fine-tune) | LIBERO-Goal | Franka Panda (7-DOF) | `OpenVLA-OFT-Goal-Demo` |
 | `openvla-oft` | `10` (default, alias `long`) | OpenVLA-OFT-7B (LIBERO-10 fine-tune) | LIBERO-10 long-horizon | Franka Panda (7-DOF) | `OpenVLA-OFT-Demo` |
 | `lap` | — | LAP-3B (PaliGemma-3B + Flow Matching, JAX) | LIBERO-Spatial | Franka Panda (7-DOF) | `LAP-Demo` |
+| `rldx` | — | RLDX-1 (RLWRLD MSAT / Qwen3-VL-8B, eager)¹ | LIBERO-10 long-horizon | Franka Panda (7-DOF) | `RLDX-Demo` |
 | `openarm-lift-act` | — | Scripted state machine (ACT data collection) | Isaac Lab Lift-Cube | OpenArm (unimanual, 7-DOF + gripper) | `OpenArm-Lift-ACT-Demo` |
+
+¹ RLDX-1 weights are under the **RLWRLD Model License v1.0 (non-commercial)**; "simulation benchmarking" is an explicit intended use. AWS-internal enablement / benchmarking only — not for customer-facing commercial positioning. Weights are downloaded from Hugging Face at runtime (not vendored).
 
 ### Showcase — VLA Rollouts
 
@@ -64,6 +67,24 @@ Each task is a two-stage instruction. Long-horizon means the policy must complet
 |---|---|
 | ![LAP-3B — between plate and ramekin (success)](docs/showcase/lap/libero-spatial-between-plate-ramekin-success.gif) | ![LAP-3B — cookie box (failure)](docs/showcase/lap/libero-spatial-cookie-box-failure.gif) |
 | MP4: [`lap/libero-spatial-between-plate-ramekin-success.mp4`](docs/showcase/lap/libero-spatial-between-plate-ramekin-success.mp4) | MP4: [`lap/libero-spatial-cookie-box-failure.mp4`](docs/showcase/lap/libero-spatial-cookie-box-failure.mp4) |
+
+#### `rldx` — RLDX-1 (RLWRLD) on LIBERO-10 long-horizon (Franka Panda 7-DOF)
+
+RLDX-1 is a Korea-origin SOTA open VLA (MSAT action head on a Qwen3-VL-8B backbone; 97.8% LIBERO average in the paper). Served eager via a ZeroMQ policy server + sim client (two venvs), `g6.xlarge` L4 sm_89, validated 2026-06-20. Two LIBERO-10 **long-horizon** tasks (distinct scenes from the `pi` / `lap` spatial clips above): `STUDY_SCENE1` book→caddy `success_rate = 1.0` (5/5); `KITCHEN_SCENE6` mug→microwave+close (articulated, two-stage) `success_rate = 0.8` (4/5). Weights are **non-commercial** (RLWRLD Model License v1.0) — sim benchmarking only.
+
+| Success — `STUDY_SCENE1: pick up the book and place it in the back compartment of the caddy` (SR 1.0, 5/5) | Success — `KITCHEN_SCENE6: put the yellow and white mug in the microwave and close it` (SR 0.8, 4/5) |
+|---|---|
+| ![RLDX-1 — book into caddy (success)](docs/showcase/rldx/libero10-study-book-caddy-success.gif) | ![RLDX-1 — mug into microwave + close (success)](docs/showcase/rldx/libero10-kitchen-mug-microwave-success.gif) |
+| MP4: [`rldx/libero10-study-book-caddy-success.mp4`](docs/showcase/rldx/libero10-study-book-caddy-success.mp4) | MP4: [`rldx/libero10-kitchen-mug-microwave-success.mp4`](docs/showcase/rldx/libero10-kitchen-mug-microwave-success.mp4) |
+| _Tight, consistent: all 5 episodes complete in 20–23 env-steps._ | Failure (1/5) — same task, hits the 90-step cap without closing: |
+| | ![RLDX-1 — mug into microwave (failure, timeout)](docs/showcase/rldx/libero10-kitchen-mug-microwave-failure.gif) |
+| | MP4: [`rldx/libero10-kitchen-mug-microwave-failure.mp4`](docs/showcase/rldx/libero10-kitchen-mug-microwave-failure.mp4) (clip is 2× speed) |
+
+> **Reading the success rate — "success" is a binary goal flag, not a quality score.** LIBERO marks an episode `success` the moment its BDDL goal predicate is satisfied; it says nothing about how cleanly or how close to the failure boundary the policy got there. That distinction matters on long-horizon tasks:
+> - `STUDY_SCENE1` (SR 1.0) is genuinely robust — every episode finishes in 20–23 env-steps with margin to spare.
+> - `KITCHEN_SCENE6` (SR 0.8) is **marginal even when it succeeds**: successful episodes range from a clean 32 steps to a labored 47 steps, while the failure runs the full 90-step cap (a *timeout*, not a hard error). The scene also contains a second (grey) mug as a distractor next to the yellow/white target. A near-cap success is one perturbation away from a timeout — so treat 0.8 here as "works, but not yet deployment-margin," not as a 4-in-5 guarantee of reliable execution.
+>
+> Takeaway for demos: pair the SR number with the **step-count spread** (in `simulation_results.csv`) and watch the failure clip — a high SR with episodes clustered near the step cap is a weaker result than the same SR with short, consistent runs.
 
 #### `gr00t-gr1` — GR00T N1.6 on RoboCasa GR1 humanoid (22-DOF)
 
@@ -184,6 +205,10 @@ python deploy.py --vla openvla-oft --libero-suite goal   --email you@example.com
 # LAP-3B — LIBERO-Spatial (zero-shot cross-embodiment VLA, JAX policy server, ~1.5-2.5 hrs)
 python deploy.py --vla lap --email you@example.com
 
+# RLDX-1 (RLWRLD) — LIBERO (SOTA open VLA, MSAT/Qwen3-VL-8B, ZeroMQ server + sim client, ~80-120 min)
+# NON-COMMERCIAL weights (sim benchmarking) — AWS-internal enablement only.
+python deploy.py --vla rldx --email you@example.com
+
 # OpenArm Lift-Cube — scripted ACT demo collection in Isaac Lab (HDF5 only; needs a 4-GPU instance)
 python deploy.py --vla openarm-lift-act --email you@example.com
 ```
@@ -210,6 +235,9 @@ aws logs tail /openvla-oft/userdata --follow --region us-east-1
 
 # LAP-3B logs
 aws logs tail /lap/userdata --follow --region us-east-1
+
+# RLDX-1 logs
+aws logs tail /rldx/userdata --follow --region us-east-1
 ```
 
 ### 4. Results
@@ -241,6 +269,7 @@ python destroy.py --vla pi
 python destroy.py --vla openvla-oft                         # default suite (10)
 python destroy.py --vla openvla-oft --libero-suite spatial  # non-default suite
 python destroy.py --vla lap
+python destroy.py --vla rldx
 ```
 
 The S3 results bucket is **retained** after stack deletion to preserve simulation outputs.
@@ -263,6 +292,7 @@ The S3 results bucket is **retained** after stack deletion to preserve simulatio
 | `openvla-oft --libero-suite goal` | libero_goal | 97.9% (paper Table I) | pending smoke test |
 | `openvla-oft --libero-suite 10` | libero_10 (long-horizon) | 94.5% (paper Table I) | validated 2026-05-04 |
 | `lap` | libero_spatial | ~85-95% (paper Table III, LIBERO fine-tuned) | validated 2026-05-17 — 0.98 @ 5 trials/task |
+| `rldx` | libero_spatial (single task) | 97.8% LIBERO avg (paper, SOTA) | validated 2026-06-20 — 1.0 (5/5 ep, eager, g6.xlarge L4 sm_89, full `deploy.py` smoke) |
 
 **Validated results (us-east-1, g6.12xlarge / g5.xlarge / g6.xlarge):**
 - GR00T N1.7: KITCHEN_SCENE3 = 1.0 (5/5), KITCHEN_SCENE4 = 1.0 (3/3)
@@ -272,6 +302,7 @@ The S3 results bucket is **retained** after stack deletion to preserve simulatio
 - OpenVLA-OFT: libero_10 = 1.0 (10/10 at 1 trial/task, g6.xlarge)
 - OpenVLA-OFT: libero_spatial = 0.92 (46/50, 5 trials/task × 10 tasks, g6.xlarge) — paper Table I = 97.6%; the gap (5.6%p) is within sampling noise at n=50 (SE ≈ 3.8%p). 8/10 tasks at 5/5; misses concentrated on `on_the_ramekin` (2/5) and `next_to_the_plate` (4/5)
 - LAP-3B: libero_spatial = 0.98 (49/50, 5 trials/task × 10 tasks, g6.xlarge) — exceeds paper Table III range (85–95%); requires upstream `scripts/libero/main.py` vertical-flip patch (see `templates/lap-userdata.sh.j2`)
+- RLDX-1 (RLWRLD): libero_10 long-horizon, two tasks (eager, g6.xlarge L4 sm_89) — `STUDY_SCENE1` book→caddy = 1.0 (5/5, tight 20–23 steps), `KITCHEN_SCENE6` mug→microwave+close = 0.8 (4/5; successes span 32–47 steps and the one failure is a 90-step-cap timeout — marginal even when it succeeds, see the showcase caveat). Full `deploy.py` deploy; ZeroMQ policy server + sim client, two-venv (main + `libero_uv`). Default `n_envs=1` (5 recommended on g6.2xlarge+); checkpoint `RLWRLD/RLDX-1-FT-LIBERO@989037c6`, repo `RLWRLD/RLDX-1@ecbfaf80`
 
 ---
 

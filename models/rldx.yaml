@@ -1,0 +1,97 @@
+# RLDX-1 (RLWRLD) configuration
+# Paper: "RLDX-1: A Dexterity-First Vision-Language-Action Foundation Model"
+#        arXiv:2605.03269 (RLWRLD, 2026)
+# Repo:  https://github.com/RLWRLD/RLDX-1 (code: Apache-2.0)
+# Goal:  LIBERO 1-click eval as a new SOTA showcase target in vla-simulator.
+#
+# CLI:   python deploy.py --vla rldx [--email YOUR@EMAIL.COM]
+#
+# Architecture: Multi-Stream Action Transformer (MSAT) on a Qwen3-VL-8B backbone.
+# Eval pattern: RLWRLD's own server + client split (their run_scripts/eval/libero/):
+#   - main .venv  (py3.10, torch 2.7.0+cu126): rldx/eval/run_rldx_server.py — ZeroMQ policy server
+#   - libero_uv venv (py3.10, torch 2.5.1):    rldx/eval/rollout_policy.py — LIBERO sim client
+# Structurally mirrors LAP (server+client, two venvs), NOT openvla-oft (single env).
+#
+# LICENSE — NON-COMMERCIAL. Weights are under the RLWRLD Model License v1.0:
+#   intended use explicitly includes "simulation benchmarking" (this PoC qualifies).
+#   out-of-scope: commercial deployment. Keep outputs to AWS-internal enablement only;
+#   do NOT use in customer-facing commercial positioning. The userdata downloads the
+#   weights from HF at runtime (not vendored), so no non-commercial weight is committed.
+
+model:
+  id: rldx
+  version: "FT-LIBERO"
+
+  # git ls-remote https://github.com/RLWRLD/RLDX-1.git HEAD → default branch `main`.
+  # Pinned to the commit validated in Phase 0 smoke test (2026-06-19).
+  rldx_commit: "ecbfaf80cd031dcc892186ed30465de3591047e6"   # Validated 2026-06-19
+
+  # HF checkpoint (LIBERO fine-tuned). Single checkpoint covers all 4 LIBERO suites
+  # (spatial/object/goal/10) — task selection is by env_name, not per-suite checkpoint.
+  # ungated (~13.84GB BF16 safetensors). VLM backbone Qwen/Qwen3-VL-8B-Instruct is
+  # pulled at model load.
+  hf_repo: "RLWRLD/RLDX-1-FT-LIBERO"
+  hf_model_revision: "989037c61dff0fbd5ab53091851f08bb4192b3f8"   # Validated 2026-06-19
+  # VLM backbone pulled by the checkpoint's config at server load (Phase 0 confirmed).
+  # Pre-downloaded in userdata so the policy server's first load doesn't race the
+  # warmup timeout while fetching ~16GB on a fresh instance.
+  backbone_hf_repo: "Qwen/Qwen3-VL-8B-Instruct"
+
+  # run_rldx_server.py arguments (Phase 0 verified)
+  embodiment_tag: "GENERAL_EMBODIMENT"
+  # Inference mode: eager (no --compile). Phase 0 proved the fused Triton/CUDA-graph
+  # suite (rldx/inference/, sm_120/Blackwell-tuned) is ONLY imported when the server is
+  # launched with --compile {submodule|fullgraph}. Eager has no sm_120 dependency and
+  # runs correctly on g6 (L4, sm_89 Ada). Leave empty → server runs eager.
+  compile: ""
+
+  # rollout_policy.py arguments (Phase 0 verified, from their eval_libero.sh)
+  max_episode_steps: 720
+  n_action_steps: 8
+  # n_envs: parallel LIBERO sim envs. Phase 0 VERIFIED the n_envs=1 path (SyncVectorEnv,
+  # 1 model on GPU, ~17GB VRAM) — system-RAM headroom for the recipe's n_envs=5 spawn was
+  # NOT measured on a 16GB xlarge. Default to the verified envelope; bump to 5 (their full-eval
+  # value) only on a larger-RAM instance (g6.2xlarge+, 32GB). Single server either way.
+  n_envs: 1
+
+instance:
+  # Phase 0 GATE PASS (2026-06-19): 1-episode rollout peak VRAM 17,416 MiB (~17.0 GB)
+  # on L40S (sm_89). L4 24GB FITS with ~6.6GB headroom. Single-GPU xlarge is sufficient.
+  preferred: [g6.xlarge, g6.2xlarge, g5.xlarge, g5.2xlarge]   # L4/A10G (sm_89/sm_86), 24GB
+  ebs_gb: 150          # Phase 0 measured ~85GB used (repo + 2 venvs + 13.84G ckpt + Qwen backbone + videos)
+  ebs_gb_bridge: 150   # bridge not supported — same value
+  # Initial smoke test: conservative. eager ~52s/episode @300 steps on L40S.
+  creationpolicy_timeout: PT180M   # install ~30-40 (uv sync + 2 venvs) + ckpt ~10 + eval + buffer
+
+# Evaluation tasks — flat list (LAP-style). RLDX env_name uses the `libero_sim/<task>`
+# namespace from their rldx/eval/sim/LIBERO/libero_env.py:register_libero_envs() (line 207:
+# `register(id=f"libero_sim/{task_name}", ...)`). ALL 4 suites register under the SAME flat
+# `libero_sim/` namespace (no suite in the path). task_name = LIBERO BDDL filename minus .bddl,
+# original casing preserved → LIBERO-10 names keep UPPERCASE scene prefixes (KITCHEN_SCENE*,
+# STUDY_SCENE*), spatial/object/goal are lowercase. num_episodes maps to rollout_policy.py
+# --n_episodes; the userdata loops per entry. (env_names verified vs repo code + LIBERO BDDL
+# ground truth, 2026-06-20 — see session 2026-06-19-1130.)
+#
+# Phase 3-2 (verified): LIBERO-Spatial single task = success_rate 1.0 (5/5). For showcase
+# differentiation we switch to two LIBERO-10 long-horizon tasks visually DISTINCT from the
+# existing pi/lap/gr00t showcase clips (gr00t already uses KITCHEN_SCENE3/4 — DO NOT reuse).
+# NOTE: long-horizon is harder than spatial → success_rate may be < 1.0 (failure clips
+# possible). That is acceptable for showcase (solving a hard multi-step task reads well even
+# at partial success); README must report the actual measured rate, not assume 1.0.
+tasks:
+  - suite: libero_10
+    env_name: "libero_sim/STUDY_SCENE1_pick_up_the_book_and_place_it_in_the_back_compartment_of_the_caddy"
+    num_episodes: 5
+    description: "LIBERO-10 long-horizon — book into caddy back compartment (study desk scene, distinct from all existing showcase clips)"
+  - suite: libero_10
+    env_name: "libero_sim/KITCHEN_SCENE6_put_the_yellow_and_white_mug_in_the_microwave_and_close_it"
+    num_episodes: 5
+    description: "LIBERO-10 long-horizon — mug into microwave + close door (articulated, distinct from gr00t's KITCHEN_SCENE3/4)"
+
+# Bridge mode (vla-hub serving) NOT supported.
+# RLDX-1's speed stack is fused Triton + CUDA Graph, which collides head-on with vla-hub's
+# "no specialized CUDA kernel / non-standard runtime" guardrail; serving is ZeroMQ, not gRPC.
+# vla-simulator runs a one-shot eager eval (no guardrail conflict). vla-hub would need an
+# eager-mode thin gRPC adapter — deferred to a separate review. See accounts/startups/rlwrld/README.md §4.
+bridge:
+  enabled: false

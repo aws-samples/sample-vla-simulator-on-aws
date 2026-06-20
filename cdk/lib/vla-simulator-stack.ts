@@ -56,6 +56,9 @@ const INSTANCE_TYPES: Record<string, string[]> = {
   pi:            ['g5.xlarge',   'g5.2xlarge',  'g6.xlarge',  'g6.2xlarge'],
   'openvla-oft': ['g6.xlarge',   'g5.xlarge',   'g6.2xlarge', 'g5.2xlarge'],
   lap:           ['g6.xlarge',   'g6.2xlarge',  'g5.xlarge',  'g5.2xlarge'],
+  // Phase 0 GATE PASS (2026-06-19): eager rollout peak VRAM ~17GB on L40S(sm_89) → L4 24GB FITS
+  // (~6.6GB headroom). Single-GPU xlarge sufficient; .2xlarge offers more system RAM for n_envs>1.
+  rldx:          ['g6.xlarge',   'g6.2xlarge',  'g5.xlarge',  'g5.2xlarge'],
   // Isaac Sim 5.1 + --enable_cameras render is heavy → 12xlarge tier (mirrors gr00t-gr1).
   'openarm-isaac': ['g6.12xlarge', 'g5.12xlarge', 'g6.2xlarge', 'g5.2xlarge'],
   // 16 collection envs × 2 TiledCameras → ResourceLoader needs >24 GB device mem, so a single-GPU

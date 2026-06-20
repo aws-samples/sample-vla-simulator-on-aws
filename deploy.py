@@ -164,7 +164,7 @@ def _maybe_import_orphan_bucket(
 def main():
     parser = argparse.ArgumentParser(description="vla-simulator 1-Click Deploy")
     parser.add_argument("--vla", required=True,
-                        choices=["gr00t", "gr00t-gr1", "gr00t-g1", "pi", "openvla-oft", "lap", "openarm-isaac", "openarm-lift-act"],
+                        choices=["gr00t", "gr00t-gr1", "gr00t-g1", "pi", "openvla-oft", "lap", "rldx", "openarm-isaac", "openarm-lift-act"],
                         help="VLA model to deploy")
     parser.add_argument("--bridge", action="store_true",
                         help="Bridge mode: use vla-hub ECS endpoint instead of local model")
@@ -223,6 +223,10 @@ def main():
             print("[error] Bridge mode not supported for openarm-lift-act (local only — scripted demo collection, no policy server).",
                   file=sys.stderr)
             sys.exit(1)
+        if args.vla == "rldx":
+            print("[error] Bridge mode not supported for rldx (local only — fused-kernel/ZeroMQ serving conflicts "
+                  "with vla-hub guardrails; see accounts/startups/rlwrld/README.md §4).", file=sys.stderr)
+            sys.exit(1)
         if args.vla in ("gr00t", "gr00t-gr1", "gr00t-g1"):
             raw_grpc = str(bridge_cfg.get("remote_grpc_endpoint", "")).strip()
             raw_vpc = str(bridge_cfg.get("vpc_id", "")).strip()
@@ -261,6 +265,8 @@ def main():
         stack_name = oft_stack_name(libero_suite)
     elif args.vla == "lap":
         stack_name = "LAP-Demo"
+    elif args.vla == "rldx":
+        stack_name = "RLDX-Demo"
     elif args.vla == "openarm-isaac":
         stack_name = "OpenArm-Isaac-Demo"
     elif args.vla == "openarm-lift-act":
@@ -340,6 +346,8 @@ def main():
                 print(f"  Estimated time: ~90 min (conda/pip ~30min + HF download ~10min + LIBERO-{libero_suite} eval ~45min)")
         elif args.vla == "lap":
             print("  Estimated time: ~90-150 min (uv venvs ~25min + HF download ~10min + LIBERO-Spatial eval ~30-50min + buffer)")
+        elif args.vla == "rldx":
+            print("  Estimated time: ~80-120 min (uv sync + libero_uv venv ~30-40min + ckpt+backbone DL ~15min + server warmup ~3min + eager rollout)")
         elif args.vla == "openarm-isaac":
             print("  Estimated time: ~120-180 min (docker pull Isaac Lab image ~20-30min + openarm/lerobot install + ckpt DL + sim boot ~10min + single rollout)")
         elif args.vla == "openarm-lift-act":

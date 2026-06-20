@@ -9,6 +9,7 @@
  *   npx cdk deploy OpenVLA-OFT-Demo            -c region=us-east-1 -c vla=openvla-oft
  *   npx cdk deploy OpenVLA-OFT-Spatial-Demo    -c region=us-east-1 -c vla=openvla-oft -c libero_suite=spatial
  *   npx cdk deploy LAP-Demo                    -c region=us-east-1 -c vla=lap
+ *   npx cdk deploy RLDX-Demo                   -c region=us-east-1 -c vla=rldx
  *   npx cdk deploy OpenArm-Isaac-Demo          -c region=us-east-1 -c vla=openarm-isaac
  *   npx cdk deploy OpenArm-Lift-ACT-Demo       -c region=us-east-1 -c vla=openarm-lift-act
  */
@@ -23,9 +24,9 @@ const app = new cdk.App();
 const region = app.node.tryGetContext('region') ?? 'ap-northeast-2';
 const vla: string = app.node.tryGetContext('vla');
 
-if (!vla || !['gr00t', 'gr00t-gr1', 'gr00t-g1', 'pi', 'openvla-oft', 'lap', 'openarm-isaac', 'openarm-lift-act'].includes(vla)) {
+if (!vla || !['gr00t', 'gr00t-gr1', 'gr00t-g1', 'pi', 'openvla-oft', 'lap', 'rldx', 'openarm-isaac', 'openarm-lift-act'].includes(vla)) {
   throw new Error(
-    'CDK context "vla" is required. Pass -c vla=gr00t, -c vla=gr00t-gr1, -c vla=gr00t-g1, -c vla=pi, -c vla=openvla-oft, -c vla=lap, -c vla=openarm-isaac, or -c vla=openarm-lift-act.\n' +
+    'CDK context "vla" is required. Pass -c vla=gr00t, -c vla=gr00t-gr1, -c vla=gr00t-g1, -c vla=pi, -c vla=openvla-oft, -c vla=lap, -c vla=rldx, -c vla=openarm-isaac, or -c vla=openarm-lift-act.\n' +
     'Use deploy.py which sets this automatically.',
   );
 }
@@ -52,6 +53,7 @@ const stackNameMap: Record<string, string> = {
   'pi':          'Pi-Demo',
   'openvla-oft': oftStackName(liberoSuite),
   'lap':         'LAP-Demo',
+  'rldx':        'RLDX-Demo',
   'openarm-isaac': 'OpenArm-Isaac-Demo',
   'openarm-lift-act': 'OpenArm-Lift-ACT-Demo',
 };
@@ -69,6 +71,7 @@ const descriptionMap: Record<string, string> = {
   'pi':          'π0.5',
   'openvla-oft': oftDescription(liberoSuite),
   'lap':         'LAP-3B + LIBERO-Spatial (Franka Panda, JAX policy server + sim client)',
+  'rldx':        'RLDX-1 (RLWRLD MSAT/Qwen3-VL-8B) + LIBERO (Franka Panda, ZeroMQ policy server + sim client, eager)',
   'openarm-isaac': 'π0.5 (LeRobot pi05 folding_latest, 16-DOF) + Isaac Lab bimanual OpenArm (pipe-proof)',
   'openarm-lift-act': 'OpenArm unimanual Lift-Cube × ACT — scripted teleop-free demo collection (HDF5)',
 };
