@@ -304,6 +304,29 @@ log "[warn] hf_model_revision not set — using unpinned HuggingFace snapshot (r
 {% endif %}
 {% endif %}
 
+{% if collect %}
+# ── [4/6] COLLECT mode: materialise the trajectory collector + LeRobot converter ──
+# Step 2 (N1.7 G1 adapter FT data): instead of rollout_policy.py (MP4 + success rate), run
+# collect_trajectories.py to dump SUCCESS-ONLY (obs,action) transitions to HDF5, then convert to a
+# GR00T LeRobotDataset. Same WBC venv / ZMQ server / checkpoint — only the driver differs (policy
+# runs at NATIVE chunk; per-step capture happens below MultiStepWrapper inside the script).
+COLLECT_DIR=/home/ubuntu/gr00t-g1-collect
+mkdir -p "${COLLECT_DIR}/datasets" "${COLLECT_DIR}/lerobot"
+log "[4/6] [COLLECT] Writing collector assets to ${COLLECT_DIR}..."
+base64 -d > "${COLLECT_DIR}/collect_trajectories.py" << 'COLLECT_TRAJ_EOF'
+{{ collect_traj_b64 -}}
+COLLECT_TRAJ_EOF
+base64 -d > "${COLLECT_DIR}/gr00t_hdf5_to_lerobot.py" << 'HDF5_LEROBOT_EOF'
+{{ hdf5_to_lerobot_b64 -}}
+HDF5_LEROBOT_EOF
+LEROBOT_TASK="{{ collection.lerobot_task }}"
+LEROBOT_REPO_ID="{{ collection.repo_id }}"
+MAX_TOTAL_EPISODES="{{ collection.max_total_episodes }}"
+# num_demos override (collect target). 0 → fall back to per-task n_episodes (set in the loop).
+COLLECT_NUM_DEMOS="{{ collection.num_demos }}"
+log "[4/6] [COLLECT] assets ready: $(ls ${COLLECT_DIR})"
+{% endif %}
+
 TASKS_JSON='{{ tasks_json }}'
 TASK_COUNT=$(echo "$TASKS_JSON" | jq length)
 SUMMARY_ALL=""
@@ -372,11 +395,52 @@ for TASK_IDX in $(seq 0 $((TASK_COUNT - 1))); do
     done
     [ "$ZMQ_READY" -eq 1 ] || die "ZMQ :8000 not ready within 7.5 min (Task ${TASK_IDX})"
 
+    touch /tmp/gr00t_task${TASK_IDX}_start.marker
+    cd "${ISAAC_GROOT_DIR}"
+{% if collect %}
+    # COLLECT mode: dump success-only (obs,action) trajectories to HDF5. The policy runs at its NATIVE
+    # action chunk (--n_action_steps = the task's N_ACTION_STEPS, e.g. 20) — NOT 1; per-timestep
+    # transitions are captured below MultiStepWrapper inside the script. (n_action_steps=1 collapses
+    # G1 whole-body balance → 0 success; see knowledge/.../action-chunk-rollout-vs-collection.md.)
+    # NUM_DEMOS = number of SUCCESSFUL demos to export (collection.num_demos override, else n_episodes).
+    HDF5_FILE="${COLLECT_DIR}/datasets/gr00t_g1_task${TASK_IDX}.hdf5"
+    NUM_DEMOS="${COLLECT_NUM_DEMOS}"
+    if [ "${NUM_DEMOS:-0}" -le 0 ] 2>/dev/null; then NUM_DEMOS="${N_EPISODES}"; fi
+    log "  [COLLECT] Collecting ${NUM_DEMOS} success demos (native chunk n_action_steps=${N_ACTION_STEPS}) → ${HDF5_FILE} ..."
+    "${VENV}/bin/python" "${COLLECT_DIR}/collect_trajectories.py" \
+        --env_name "${ENV_NAME}" \
+        --policy_client_host localhost \
+        --policy_client_port 8000 \
+        --n_episodes "${NUM_DEMOS}" \
+        --max_episode_steps "${MAX_STEPS}" \
+        --n_action_steps "${N_ACTION_STEPS}" \
+        --dataset_file "${HDF5_FILE}" \
+        --video_dir "${VIDEO_DIR}" \
+        --video_fps "${VIDEO_FPS}" \
+        --video_crf "${VIDEO_CRF}" \
+        --steps_per_render "${STEPS_PER_RENDER}" \
+        --max_total_episodes "${MAX_TOTAL_EPISODES}" \
+        2>&1 | tee /tmp/gr00t_rollout_task${TASK_IDX}.log \
+        || log "  [warn] Task ${TASK_IDX} collection error (continuing)"
+
+    # Convert HDF5 → GR00T LeRobotDataset (no GPU needed; lerobot is in the WBC venv).
+    LEROBOT_ROOT="${COLLECT_DIR}/lerobot/task-${TASK_IDX}"
+    if [ -f "${HDF5_FILE}" ]; then
+        log "  [COLLECT] Converting HDF5 → LeRobotDataset at ${LEROBOT_ROOT} ..."
+        "${VENV}/bin/python" "${COLLECT_DIR}/gr00t_hdf5_to_lerobot.py" \
+            --hdf5 "${HDF5_FILE}" \
+            --repo-id "${LEROBOT_REPO_ID}" \
+            --root "${LEROBOT_ROOT}" \
+            --task "${LEROBOT_TASK}" \
+            2>&1 | tee -a /tmp/gr00t_rollout_task${TASK_IDX}.log \
+            || log "  [warn] Task ${TASK_IDX} LeRobot conversion error (continuing)"
+    else
+        log "  [warn] No HDF5 produced (${HDF5_FILE}) — skipping conversion"
+    fi
+{% else %}
     # N1.6 rollout_policy.py uses underscore args (--env_name, not --env-name).
     # G1 loco-manip adds --n_action_steps (=20) and uses longer episodes (max_episode_steps=1440).
     log "  Running rollout (CLI mode, N1.6 underscore args)..."
-    touch /tmp/gr00t_task${TASK_IDX}_start.marker
-    cd "${ISAAC_GROOT_DIR}"
     "${VENV}/bin/python" gr00t/eval/rollout_policy.py \
         --env_name "${ENV_NAME}" \
         --policy_client_host localhost \
@@ -387,16 +451,27 @@ for TASK_IDX in $(seq 0 $((TASK_COUNT - 1))); do
         --max_episode_steps "${MAX_STEPS}" \
         2>&1 | tee /tmp/gr00t_rollout_task${TASK_IDX}.log \
         || log "  [warn] Task ${TASK_IDX} rollout error (continuing)"
+{% endif %}
 
     find /tmp -name "*.mp4" -newer /tmp/gr00t_task${TASK_IDX}_start.marker \
         -exec mv {} "${VIDEO_DIR}/" \; 2>/dev/null || true
     VIDEO_COUNT=$(find "${VIDEO_DIR}" -name "*.mp4" 2>/dev/null | wc -l)
     log "  Videos collected: ${VIDEO_COUNT}"
 
+{% if collect %}
+    # COLLECT mode: "success rate" line is absent; parse the collector's exported-demo count instead.
+    # Denominator is NUM_DEMOS (the collect target), not N_EPISODES (rollout/eval count).
+    N_SUCCESS=$(grep -oE 'DONE: [0-9]+ successful demos' \
+        /tmp/gr00t_rollout_task${TASK_IDX}.log 2>/dev/null | tail -1 | grep -oE '[0-9]+' | head -1 || echo "0")
+    N_SUCCESS="${N_SUCCESS:-0}"
+    SR=$(awk "BEGIN { if (${NUM_DEMOS}+0>0) printf \"%.2f\", ${N_SUCCESS}/${NUM_DEMOS}; else print \"0\" }" 2>/dev/null || echo "0")
+    log "  collected demos=${N_SUCCESS}/${NUM_DEMOS} (target met ratio=${SR})"
+{% else %}
     SR=$(grep -oE 'success rate:[[:space:]]+[0-9.]+' \
         /tmp/gr00t_rollout_task${TASK_IDX}.log 2>/dev/null | tail -1 | awk '{print $NF}' || echo "unknown")
     N_SUCCESS=$(awk "BEGIN { printf \"%d\", ${N_EPISODES} * ${SR:-0} }" 2>/dev/null || echo "?")
     log "  success_rate=${SR} (${N_SUCCESS}/${N_EPISODES})"
+{% endif %}
 
     {
         echo "env_name: ${ENV_NAME}"
@@ -470,6 +545,58 @@ for TASK_IDX in $(seq 0 $((TASK_COUNT - 1))); do
         aws s3 cp "/tmp/gr00t_task${TASK_IDX}_summary.txt" \
         "${S3_TASK_PREFIX}/summary.txt" --region "$REGION" || true
 
+{% if collect %}
+    # COLLECT mode: upload the trajectory HDF5 + the GR00T LeRobotDataset (the actual deliverable
+    # for N1.7 G1 adapter FT). These are what vla-ft consumes — see the order-form.
+    #
+    # ⚠️ ROBUST UPLOAD (main-run lerobot/ loss root cause, 2026-06-17): the previous version piped
+    #   `aws s3 sync ... 2>&1 | tail -5 | tee` and swallowed failure with `|| log warn`, then fell
+    #   through to auto-terminate. Result: lerobot/ ended up 0 objects on S3 and the instance was gone
+    #   before anyone could inspect. Fixes here: (a) NO tail pipe (exit status was being masked);
+    #   (b) --only-show-errors (no CW progress flood that delayed the completion marker); (c) explicit
+    #   exit-code check with retry; (d) VERIFY non-empty on S3 before declaring success; (e) record
+    #   LEROBOT_SYNC_OK so [6/6] can refuse to auto-terminate if the deliverable never landed.
+    LEROBOT_SYNC_OK=0
+    if [ -f "${HDF5_FILE}" ]; then
+        log "  [COLLECT] Uploading HDF5 ($(du -h "${HDF5_FILE}" 2>/dev/null | cut -f1)): ${S3_TASK_PREFIX}/dataset/"
+        HDF5_OK=0
+        for attempt in 1 2 3; do
+            if aws s3 cp "${HDF5_FILE}" "${S3_TASK_PREFIX}/dataset/$(basename "${HDF5_FILE}")" \
+                --region "$REGION" --only-show-errors; then
+                HDF5_OK=1; log "  [COLLECT] HDF5 upload OK (attempt ${attempt})"; break
+            fi
+            log "  [warn] HDF5 upload failed (attempt ${attempt}/3) — retrying in 15s"; sleep 15
+        done
+        [ "$HDF5_OK" -eq 1 ] || log "  [ERROR] HDF5 upload FAILED after 3 attempts"
+    fi
+    if [ -d "${LEROBOT_ROOT}" ]; then
+        LOCAL_N=$(find "${LEROBOT_ROOT}" -type f 2>/dev/null | wc -l | tr -d ' ')
+        log "  [COLLECT] Syncing LeRobotDataset (${LOCAL_N} local files): ${S3_TASK_PREFIX}/lerobot/"
+        for attempt in 1 2 3; do
+            if aws s3 sync "${LEROBOT_ROOT}" "${S3_TASK_PREFIX}/lerobot/" \
+                --region "$REGION" --only-show-errors; then
+                S3_N=$(aws s3 ls "${S3_TASK_PREFIX}/lerobot/" --recursive --region "$REGION" 2>/dev/null | wc -l | tr -d ' ')
+                log "  [COLLECT] sync attempt ${attempt}: local=${LOCAL_N} s3=${S3_N}"
+                if [ "${S3_N:-0}" -gt 0 ]; then LEROBOT_SYNC_OK=1; break; fi
+                log "  [warn] sync exited 0 but S3 lerobot/ shows 0 objects — retrying in 15s"
+            else
+                log "  [warn] LeRobot sync failed (attempt ${attempt}/3) — retrying in 15s"
+            fi
+            sleep 15
+        done
+        if [ "$LEROBOT_SYNC_OK" -eq 1 ]; then
+            log "  [COLLECT] LeRobotDataset sync VERIFIED on S3 (${S3_TASK_PREFIX}/lerobot/, ${S3_N} objects)"
+        else
+            log "  [ERROR] LeRobotDataset sync FAILED/EMPTY after 3 attempts — instance will NOT auto-terminate (see [6/6])."
+        fi
+    else
+        log "  [warn] LEROBOT_ROOT (${LEROBOT_ROOT}) missing — converter produced no dataset; sync skipped"
+    fi
+    # flush marker AFTER the upload block so it ingests to CloudWatch distinct from cp/sync progress.
+    sleep 3
+    log "  [COLLECT] upload block complete (HDF5_OK=${HDF5_OK:-0} LEROBOT_SYNC_OK=${LEROBOT_SYNC_OK})"
+{% endif %}
+
     if [ -f "/tmp/gr00t_task${TASK_IDX}_summary.txt" ]; then
         SR=$(grep 'success_rate' "/tmp/gr00t_task${TASK_IDX}_summary.txt" | awk '{print $2}')
         NS=$(grep 'n_success' "/tmp/gr00t_task${TASK_IDX}_summary.txt" | awk '{print $2}')
@@ -485,13 +612,15 @@ done
 # ── [5/6] SNS notification + cfn-signal ──────────────────────────
 log "[5/6] Sending SNS notification..."
 
-{% if remote_grpc_endpoint %}
+{% if collect %}
+_MODE_INFO="Mode: COLLECT (GR00T N1.6 G1 success-only trajectory dump → HDF5 + LeRobotDataset for N1.7 G1 FT)"
+{% elif remote_grpc_endpoint %}
 _MODE_INFO="Mode: Bridge (remote gRPC → {{ remote_grpc_endpoint }})"
 {% else %}
 _MODE_INFO="Mode: Local (GR00T N1.6 G1 checkpoint loaded on EC2)"
 {% endif %}
 
-SNS_MESSAGE="[${STACK_NAME}] GR00T-G1 Simulation complete (RUN_ID: ${RUN_ID})
+SNS_MESSAGE="[${STACK_NAME}] GR00T-G1 {% if collect %}Collection{% else %}Simulation{% endif %} complete (RUN_ID: ${RUN_ID})
 ${SUMMARY_ALL}
 
 ${_MODE_INFO}
@@ -500,7 +629,7 @@ Download results:
   aws s3 sync s3://${S3_BUCKET}/${RUN_ID}/ ./gr00t-g1-results/${RUN_ID}/ --region ${REGION}
 
 Teardown:
-  python destroy.py --vla gr00t-g1"
+  python destroy.py --vla gr00t-g1 --region ${REGION}"
 
 aws sns publish \
     --topic-arn "$SNS_TOPIC_ARN" \
@@ -513,6 +642,18 @@ log "[5/6] Sending cfn-signal..."
 cfn_signal 0
 
 # ── [6/6] EC2 auto-terminate ──────────────────────────────────────
+{% if collect %}
+# COLLECT mode safety gate: do NOT auto-terminate if the LeRobotDataset never landed on S3 (the
+# deliverable). Keeps the instance alive (billed) so the data can be rescued / inspected, instead of
+# silently losing it as the 2026-06-17 main run did. HDF5 is the recoverable fallback; the lerobot/
+# dataset is the gate. Set LEROBOT_SYNC_OK default in case the collect block never ran.
+LEROBOT_SYNC_OK="${LEROBOT_SYNC_OK:-0}"
+if [ "${AUTO_TERMINATE}" = "true" ] && [ "${LEROBOT_SYNC_OK}" != "1" ]; then
+    log "[6/6] ⚠️ AUTO_TERMINATE requested but LeRobotDataset sync NOT verified (LEROBOT_SYNC_OK=${LEROBOT_SYNC_OK})."
+    log "[6/6] ⚠️ KEEPING instance ALIVE for manual rescue/inspection (HDF5 may still be on S3). Terminate manually after recovery: aws ec2 terminate-instances --instance-ids <id> --region ${REGION}"
+    AUTO_TERMINATE="false"
+fi
+{% endif %}
 if [ "${AUTO_TERMINATE}" = "true" ]; then
     log "[6/6] Auto-terminating EC2 instance..."
     TOKEN=$(curl -s -X PUT \

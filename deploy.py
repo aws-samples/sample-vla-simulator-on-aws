@@ -176,7 +176,18 @@ def main():
         "--libero-suite", default=OFT_DEFAULT_SUITE, choices=list(OFT_LIBERO_SUITES),
         help="openvla-oft only: LIBERO suite (default: 10 = LIBERO-Long; `long` aliases `10`)",
     )
+    parser.add_argument("--collect", action="store_true",
+                        help="gr00t-g1 only: trajectory COLLECTION mode (success-only obs/action HDF5 + "
+                             "LeRobotDataset for N1.7 G1 adapter FT) instead of rollout/video.")
     args = parser.parse_args()
+
+    if args.collect and args.vla != "gr00t-g1":
+        print("[error] --collect is only supported for --vla gr00t-g1.", file=sys.stderr)
+        sys.exit(1)
+    if args.collect and args.bridge:
+        print("[error] --collect is local mode only (bridge delegates inference; no local obs/action "
+              "dict to dump).", file=sys.stderr)
+        sys.exit(1)
 
     config = _load_config(args.vla)
     deployment = config.get("deployment", {})
@@ -256,7 +267,7 @@ def main():
         stack_name = "OpenArm-Lift-ACT-Demo"
     else:
         stack_name = "Pi-Demo"
-    mode = "bridge" if args.bridge else "local"
+    mode = "collect" if args.collect else ("bridge" if args.bridge else "local")
     s3_results_prefix = deployment.get("s3_results_prefix", "vla-sim-results")
     cdk_dir = str(BASE_DIR / "cdk")
 
@@ -276,12 +287,14 @@ def main():
     oft_suite_args: list[str] = []
     if args.vla == "openvla-oft":
         oft_suite_args = ["--libero-suite", shlex.quote(libero_suite)]
+    collect_args: list[str] = ["--collect"] if args.collect else []
     subprocess.run(  # nosec B603 - sys.executable is the current Python interpreter, not user input
         [
             sys.executable, "generate.py",
             "--vla", args.vla,
             "--output-dir", "assets/userdata",
             *oft_suite_args,
+            *collect_args,
             *generate_extra,
         ],
         cwd=str(BASE_DIR),

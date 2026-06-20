@@ -64,3 +64,24 @@ tasks:
 bridge:
   remote_grpc_endpoint: ""  # local mode by default
   vpc_id: ""
+
+# Collection mode (deploy.py --collect) — Step 2: dump success-only (obs,action) trajectories from
+# the N1.6 cloudwalk teacher into an HDF5 + GR00T LeRobotDataset, for N1.7 G1 adapter fine-tuning.
+# Only used with --collect; the rollout path above ignores this block.
+# In collect mode the policy runs at its NATIVE action chunk (n_action_steps=20 — forcing 1 collapses
+# WBC balance, see knowledge action-chunk note); per-timestep transitions are captured below
+# MultiStepWrapper. collection.num_demos = number of SUCCESSFUL demos to export (decoupled from
+# tasks[].n_episodes). Only the registered UNITREE_G1 keys are dumped (state.* + video.ego_view);
+# raw sim state + extra cameras (tpp_view, *_image) are dropped at capture (2026-06-17 main-run fix).
+collection:
+  lerobot_task: "pick up the apple and place it on the plate"   # NL task string stored per frame
+  repo_id: "local/gr00t-g1-applepnp"                            # LeRobotDataset repo id
+  # num_demos = SUCCESSFUL demos to export (collect target), decoupled from tasks[].n_episodes (eval).
+  # MAIN run (cc-11416, 2026-06-17): run#2 validated the pipeline end-to-end at num_demos=5
+  #   (5/5 exported, 13GiB HDF5, per-step capture OK; converter import/finalize bug fixed in bc41cf3).
+  #   run#2 measured success rate = 5/11 attempts ≈ 45%; ~2.6 GiB HDF5 per demo (per-step, 2 cams).
+  #   Sizing for 50 demos: ~110 attempts expected (cap 165 = 1.5x margin); HDF5 ~130GiB + lerobot
+  #   ~78GiB ≈ 208GiB < ebs_gb 500 (ok); ~110 attempts x 46s ≈ 85min collect + ~16min install + convert
+  #   + upload << PT210M timeout (ok). vla-ft H: 30-50 recommended (production bar 100-200).
+  num_demos: 50
+  max_total_episodes: 165                                        # safety cap on ATTEMPTED episodes (run#2 ~45% → ~110 expected for 50, 1.5x margin)

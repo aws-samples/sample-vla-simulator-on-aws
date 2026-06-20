@@ -117,8 +117,43 @@ def generate_gr00t_gr1(config: dict, resolved_grpc: str, resolved_vpc: str, dry_
     return env.get_template("gr00t-gr1-userdata.sh.j2").render(**ctx)
 
 
-def generate_gr00t_g1(config: dict, resolved_grpc: str, resolved_vpc: str, dry_run: bool) -> str:
+def generate_gr00t_g1(config: dict, resolved_grpc: str, resolved_vpc: str, dry_run: bool,
+                      collect: bool = False) -> str:
+    """GR00T N1.6 G1 whole-body loco-manip. Two modes (same WBC/ZMQ/checkpoint stack):
+
+      • rollout (default): run rollout_policy.py → MP4 + success rate to S3 (the verified 3/10 demo).
+      • collect (--collect): run collect_trajectories.py → success-only (obs,action) HDF5 to S3, for
+        imitation fine-tuning of an N1.7 G1 adapter. Forces n_action_steps=1 (per-timestep transitions)
+        and embeds the 2 collect assets as base64. Everything else (setup, ZMQ server, ckpt) is shared.
+    """
     ctx = _build_gr00t_ctx(config, resolved_grpc, "gr00t-g1")
+    ctx["collect"] = collect
+    if collect:
+        if resolved_grpc:
+            print("[error] --collect is local mode only (bridge delegates inference, no obs/action "
+                  "dict locally to dump).", file=sys.stderr)
+            sys.exit(1)
+        asset_dir = BASE_DIR / "assets" / "gr00t-g1"
+        asset_files = {
+            "collect_traj_b64": "collect_trajectories.py",
+            "hdf5_to_lerobot_b64": "gr00t_hdf5_to_lerobot.py",
+        }
+        missing = [fn for fn in asset_files.values() if not (asset_dir / fn).exists()]
+        if missing:
+            print(f"[error] gr00t-g1 collect asset 파일 없음: {missing} (assets/gr00t-g1/ 확인)",
+                  file=sys.stderr)
+            sys.exit(1)
+        for ctx_key, fname in asset_files.items():
+            ctx[ctx_key] = base64.encodebytes((asset_dir / fname).read_bytes()).decode()
+        collection = config.get("collection", {})
+        ctx["collection"] = {
+            "lerobot_task": collection.get("lerobot_task", "pick up the apple and place it on the plate"),
+            "repo_id": collection.get("repo_id", "local/gr00t-g1-applepnp"),
+            "max_total_episodes": collection.get("max_total_episodes", 0),
+            # num_demos = SUCCESSFUL demos to export (collect target). Decoupled from tasks[].n_episodes
+            # (which is the rollout/eval episode count) so a small validation collect run doesn't alter eval.
+            "num_demos": collection.get("num_demos", 0),  # 0 → fall back to tasks[].n_episodes
+        }
     env = Environment(loader=FileSystemLoader(str(TEMPLATES_DIR)), keep_trailing_newline=True)  # nosec B701 - shell script template, autoescape not applicable
     return env.get_template("gr00t-g1-userdata.sh.j2").render(**ctx)
 
@@ -331,6 +366,9 @@ def main():
         "--libero-suite", default=OFT_DEFAULT_SUITE, choices=list(OFT_LIBERO_SUITES),
         help="openvla-oft: LIBERO suite (default: 10 = LIBERO-Long; `long` is alias for `10`)",
     )
+    parser.add_argument("--collect", action="store_true",
+                        help="gr00t-g1: trajectory COLLECTION mode (success-only obs/action HDF5 for "
+                             "N1.7 G1 adapter FT) instead of the default rollout/video mode.")
     args = parser.parse_args()
 
     config_path = Path(args.config).resolve()
@@ -348,7 +386,8 @@ def main():
     elif args.vla == "gr00t-gr1":
         rendered = generate_gr00t_gr1(config, args.resolved_grpc, args.resolved_vpc, args.dry_run)
     elif args.vla == "gr00t-g1":
-        rendered = generate_gr00t_g1(config, args.resolved_grpc, args.resolved_vpc, args.dry_run)
+        rendered = generate_gr00t_g1(config, args.resolved_grpc, args.resolved_vpc, args.dry_run,
+                                     collect=args.collect)
     elif args.vla == "openvla-oft":
         rendered = generate_openvla_oft(config, args.libero_suite, args.dry_run)
     elif args.vla == "lap":
