@@ -171,6 +171,14 @@ export class VlaSimulatorStack extends cdk.Stack {
       endpoint: notifyEmail,
     });
 
+    // N1.7 rollout server (gr00t-g1 Step 2): if models/gr00t-g1.yaml has server.s3_ckpt_uri, the
+    // instance must READ the fine-tuned ckpt from that (external) artifacts bucket. Parse the bucket
+    // name so the IAM role can be scoped to it (GetObject/ListBucket). Empty → N1.6 demo path (no extra grant).
+    const serverS3CkptUri: string = (modelConfig.server?.s3_ckpt_uri ?? '').trim();
+    const serverCkptBucket: string = serverS3CkptUri.startsWith('s3://')
+      ? serverS3CkptUri.slice('s3://'.length).split('/')[0]
+      : '';
+
     // ── IAM Role ──────────────────────────────────────────────────
     const logGroupPrefix = `/${vla}/*`;
     const role = new iam.Role(this, `${vla.charAt(0).toUpperCase() + vla.slice(1)}InstanceRole`, {
@@ -224,6 +232,19 @@ export class VlaSimulatorStack extends cdk.Stack {
         }),
       },
     });
+
+    // N1.7 rollout server (gr00t-g1 Step 2): allow reading the fine-tuned ckpt from the external
+    // artifacts bucket. Scoped to that bucket only; added only when server.s3_ckpt_uri is set.
+    if (serverCkptBucket) {
+      role.addToPolicy(new iam.PolicyStatement({
+        actions: ['s3:GetObject'],
+        resources: [`arn:${cdk.Aws.PARTITION}:s3:::${serverCkptBucket}/*`],
+      }));
+      role.addToPolicy(new iam.PolicyStatement({
+        actions: ['s3:ListBucket'],
+        resources: [`arn:${cdk.Aws.PARTITION}:s3:::${serverCkptBucket}`],
+      }));
+    }
 
     const instanceProfile = new iam.CfnInstanceProfile(this, `${vla.toUpperCase()}InstanceProfile`, {
       roles: [role.roleName],
@@ -397,6 +418,11 @@ export class VlaSimulatorStack extends cdk.Stack {
           { regex: '/Resource::arn:.+:s3:::cdk-hnb659fds-assets-.+/' },
         ],
       },
+      ...(serverCkptBucket ? [{
+        id: 'AwsSolutions-IAM5',
+        reason: `N1.7 rollout reads the fine-tuned ckpt objects from ${serverCkptBucket}; object key wildcard required for the ckpt directory contents (read-only).`,
+        appliesTo: [`Resource::arn:<AWS::Partition>:s3:::${serverCkptBucket}/*`],
+      }] : []),
     ]);
   }
 }

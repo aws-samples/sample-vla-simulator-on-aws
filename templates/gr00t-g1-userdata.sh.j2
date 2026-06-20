@@ -16,6 +16,15 @@ set -euo pipefail
 ISAAC_GROOT_DIR=/home/ubuntu/Isaac-GR00T
 # N1.6 G1: single venv for both rollout and server (GR00T-WholeBodyControl, GEAR WBC sim)
 VENV="${ISAAC_GROOT_DIR}/gr00t/eval/sim/GR00T-WholeBodyControl/GR00T-WholeBodyControl_uv/.venv"
+{% if server_n17 %}
+# N1.7 rollout server (Step 2): the WBC sim env factory (gr00tlocomanip_g1_sim/*) exists ONLY at the
+# N1.6 Isaac commit ({{ isaac_groot_commit[:8] }}) and the N1.7 Gr00tN1d7 model class exists ONLY at
+# {{ server_isaac_groot_commit[:8] }}. So the policy server runs in a SECOND Isaac-GR00T checkout +
+# its own uv-synced venv, talking to the WBC sim over ZMQ :8000. See models/gr00t-g1.yaml `server:`.
+ISAAC_GROOT_N17_DIR=/home/ubuntu/Isaac-GR00T-N17
+SERVER_VENV="${ISAAC_GROOT_N17_DIR}/.venv"
+N17_CKPT_DIR=/home/ubuntu/gr00t-n17-ckpt
+{% endif %}
 VIDEO_BASE_DIR=/tmp/gr00t-videos
 RUN_ID=$(date '+%Y-%m-%d-%H%M')
 BRIDGE_DIR=/tmp/gr00t_bridge
@@ -243,6 +252,77 @@ import torch; print('torch:', torch.__version__, 'cuda:', torch.cuda.is_availabl
 import gr00t; print('gr00t OK (path:', gr00t.__file__, ')')
 " || die "Sanity test failed"
 
+{% if server_n17 %}
+# ── [3.2/6] N1.7 inference server: second Isaac-GR00T checkout + uv-synced venv ──────────────────
+# The WBC sim (above) is pinned to the N1.6 Isaac commit because GR00T-WholeBodyControl was deleted
+# from the repo at N1.7. The N1.7 Gr00tN1d7 model class (Cosmos-Reason2-2B backbone, transformers
+# 4.57.3) only loads here, so we clone a SECOND checkout at {{ server_isaac_groot_commit[:8] }} and
+# uv-sync its own venv. The two venvs talk over ZMQ :8000 (server here, sim client in WBC venv).
+log "[3.2/6] [N1.7] Cloning second Isaac-GR00T for server (pinned: {{ server_isaac_groot_commit[:8] }})..."
+if [ ! -d "${ISAAC_GROOT_N17_DIR}" ]; then
+    git clone https://github.com/NVIDIA/Isaac-GR00T.git "${ISAAC_GROOT_N17_DIR}" 2>&1 \
+        | tee /tmp/gr00t_n17_clone.log
+    git -C "${ISAAC_GROOT_N17_DIR}" checkout "{{ server_isaac_groot_commit }}" 2>&1 \
+        || die "N1.7 Isaac-GR00T: failed to checkout pinned commit {{ server_isaac_groot_commit }}"
+    log "  [N1.7] commit: $(git -C "${ISAAC_GROOT_N17_DIR}" rev-parse HEAD)"
+fi
+log "[3.2/6] [N1.7] Installing server venv (uv sync --no-dev from uv.lock; flash-attn prebuilt wheel)..."
+cd "${ISAAC_GROOT_N17_DIR}"
+uv sync --no-dev 2>&1 | tee /tmp/gr00t_n17_server_venv.log \
+    || die "N1.7 gr00t uv sync failed (see /tmp/gr00t_n17_server_venv.log)"
+log "  [3.2/6] [N1.7] server venv ready: ${SERVER_VENV}"
+"${SERVER_VENV}/bin/python" -c "
+import transformers, torch
+from gr00t.model.gr00t_n1d7.gr00t_n1d7 import Gr00tN1d7  # N1.7 model class — fails fast if commit is wrong
+print('[N1.7] transformers', transformers.__version__, '| torch', torch.__version__, '| Gr00tN1d7 OK')
+" 2>&1 | tee /tmp/gr00t_n17_sanity.log || die "N1.7 server venv sanity failed (Gr00tN1d7 import)"
+
+# ── [3.3/6] Codec bridge: overlay the N1.7 ZMQ serializer onto the WBC (sim-client) venv ─────────
+# The sim client (rollout_policy.py in the WBC venv @ {{ isaac_groot_commit[:8] }}) and the N1.7 server
+# both use gr00t/policy/server_client.py, but the numpy wire codec diverged: N1.6 = np.save inside
+# __ndarray_class__, N1.7 = msgpack_numpy envelope (+ __ModalityConfig__ rename). Mismatched codecs
+# silently fail to deserialize obs/action. We copy the N1.7 server_client.py over the WBC venv's gr00t
+# so both sides speak the same codec. Drop-in: imports (msgpack/msgpack_numpy/numpy/zmq/ModalityConfig/
+# to_json_serializable/BasePolicy) all exist at {{ isaac_groot_commit[:8] }}; msgpack==1.1.0 /
+# msgpack-numpy==0.4.8 / numpy==1.26.4 pins are identical at both commits.
+log "[3.3/6] [N1.7] Overlaying N1.7 server_client.py codec onto WBC venv..."
+N17_SERVER_CLIENT="${ISAAC_GROOT_N17_DIR}/gr00t/policy/server_client.py"
+[ -f "${N17_SERVER_CLIENT}" ] || die "N1.7 server_client.py not found at ${N17_SERVER_CLIENT}"
+# Resolve the WBC venv's gr00t package dir. CRITICAL: run from a NEUTRAL cwd (cd /), because we are
+# currently inside ${ISAAC_GROOT_N17_DIR} (set for the [3.2] uv sync) and BOTH checkouts have a top-level
+# gr00t/ package — Python prepends cwd ('') to sys.path, so `import gr00t` from the N1.7 dir resolves to
+# the N1.7 source tree, NOT the WBC venv's editable install. That made src==dest and cp failed (observed
+# 2026-06-19 redeploy). Resolving from / forces the venv's installed gr00t. Stderr→log so a warning can't
+# corrupt the captured path.
+WBC_GR00T_DIR=$(cd / && "${VENV}/bin/python" -c "import os, gr00t; print(os.path.dirname(gr00t.__file__))" 2>>/tmp/gr00t_wbcdir.err || true)
+[ -n "${WBC_GR00T_DIR}" ] && [ -d "${WBC_GR00T_DIR}/policy" ] \
+    || die "WBC venv gr00t/policy dir not resolvable (got: [${WBC_GR00T_DIR}]; see /tmp/gr00t_wbcdir.err)"
+log "  [3.3/6] WBC gr00t dir: ${WBC_GR00T_DIR}"
+# Guard: the WBC gr00t MUST be the N1.6 checkout (ISAAC_GROOT_DIR), never the N1.7 server checkout — else
+# we'd overlay the file onto itself (src==dest) and/or corrupt the N1.7 server's own server_client.py.
+case "${WBC_GR00T_DIR}" in
+    "${ISAAC_GROOT_N17_DIR}"/*) die "WBC gr00t resolved to the N1.7 server checkout (${WBC_GR00T_DIR}) — cwd shadowed the import; refusing overlay (src==dest)";;
+esac
+[ "${N17_SERVER_CLIENT}" -ef "${WBC_GR00T_DIR}/policy/server_client.py" ] \
+    && die "codec overlay src and dest are the same file (${N17_SERVER_CLIENT}) — wrong WBC dir resolved"
+cp "${N17_SERVER_CLIENT}" "${WBC_GR00T_DIR}/policy/server_client.py" \
+    || die "codec overlay copy failed (src=${N17_SERVER_CLIENT} dest=${WBC_GR00T_DIR}/policy/)"
+# Leave the N1.7 dir BEFORE verifying — the verification (and the rollout client) must import the WBC
+# venv's gr00t, not the N1.7 source tree that cwd would shadow.
+cd "${ISAAC_GROOT_DIR}"
+# msgpack_numpy is a server_client.py import → ensure it's present in the WBC (sim-client) venv.
+"${VENV}/bin/python" -c "import msgpack_numpy" 2>/dev/null \
+    || uv pip install "msgpack-numpy==0.4.8" --python "${VENV}/bin/python" 2>&1 | tee /tmp/gr00t_msgpacknumpy.log \
+    || die "msgpack-numpy install into WBC venv failed"
+# Verify from a neutral cwd that the WBC venv's gr00t (the overlay target) now speaks msgpack_numpy.
+(cd / && "${VENV}/bin/python" -c "
+import os, gr00t, inspect, msgpack_numpy
+from gr00t.policy.server_client import MsgSerializer, PolicyClient
+assert 'msgpack_numpy' in inspect.getsource(inspect.getmodule(MsgSerializer)), 'overlay did not take (no msgpack_numpy in module)'
+print('[N1.7] codec overlay OK on', os.path.dirname(gr00t.__file__), '(WBC venv now speaks msgpack_numpy)')
+") 2>&1 | tee /tmp/gr00t_codec_overlay.log || die "codec overlay verification failed"
+{% endif %}
+
 {% if remote_grpc_endpoint %}
 # ── [3.5/6] Bridge mode: deps install + bridge files ─────────────
 log "[3.5/6] Bridge mode — installing gRPC bridge dependencies..."
@@ -279,6 +359,66 @@ export HF_HOME=/home/ubuntu/.cache/huggingface
 {% if remote_grpc_endpoint %}
 log "[4/6] Bridge mode — skipping HF model download (inference delegated to ${REMOTE_GRPC_ENDPOINT})"
 HF_MODEL_PATH=""
+{% elif server_n17 %}
+# N1.7 rollout server (Step 2): download the fine-tuned N1.7 G1 adapter ckpt (from Hugging Face if
+# server.hf_repo is set, else from S3) and load it with the N1.7 SERVER_VENV. The fine-tuned ckpt and
+# the gated Cosmos-Reason2-2B backbone are both re-fetched at model load → need an HF token. (The WBC
+# sim env is built separately above; no model download for it.)
+log "[4/6] [N1.7] Reading HF token from SSM ({{ server_hf_token_ssm }} @ ${REGION}) for gated NVIDIA weights..."
+HF_TOKEN=$(aws ssm get-parameter \
+    --name "{{ server_hf_token_ssm }}" \
+    --with-decryption \
+    --query 'Parameter.Value' --output text \
+    --region "$REGION" 2>/dev/null || echo "")
+if [ -n "$HF_TOKEN" ]; then
+    export HUGGING_FACE_HUB_TOKEN="$HF_TOKEN"
+    export HF_TOKEN="$HF_TOKEN"
+    log "  [N1.7] HF token loaded"
+else
+    log "[warn] [N1.7] HF token not found in SSM ({{ server_hf_token_ssm }} @ ${REGION}) — gated weight download may fail"
+fi
+
+mkdir -p "${N17_CKPT_DIR}"
+{% if server_hf_repo %}
+# Public, reproducible path: pull the merged N1.7 G1 adapter from Hugging Face. The repo is gated
+# (mirrors the upstream Cosmos-Reason2-2B posture) → the SSM HF token must have access granted.
+log "[4/6] [N1.7] Downloading fine-tuned ckpt from Hugging Face: {{ server_hf_repo }}{% if server_hf_revision %} @ {{ server_hf_revision[:8] }}{% endif %}"
+"${SERVER_VENV}/bin/python" - "${N17_CKPT_DIR}" <<'PYHF' 2>&1 | tee /tmp/gr00t_n17_hf_download.log \
+    || die "[N1.7] HF ckpt download failed ({{ server_hf_repo }})"
+import sys
+from huggingface_hub import snapshot_download
+snapshot_download(
+    "{{ server_hf_repo }}",
+{% if server_hf_revision %}    revision="{{ server_hf_revision }}",
+{% endif %}    local_dir=sys.argv[1],
+)
+print("ckpt downloaded")
+PYHF
+{% else %}
+# Private path: pull the fine-tuned ckpt from S3 (vla-ft output bucket). Only the top-level merged ckpt
+# is needed for serving (config.json + 3 safetensors shards + index + processor/ + experiment_cfg/);
+# exclude the intermediate checkpoint-*/ dirs (~125GB) to save bandwidth.
+log "[4/6] [N1.7] Downloading fine-tuned ckpt from S3: {{ server_s3_ckpt_uri }}"
+aws s3 sync "{{ server_s3_ckpt_uri }}" "${N17_CKPT_DIR}/" \
+    --exclude "checkpoint-*/*" \
+    --only-show-errors --region "$REGION" 2>&1 | tee /tmp/gr00t_n17_s3_sync.log \
+    || die "[N1.7] S3 ckpt sync failed ({{ server_s3_ckpt_uri }})"
+{% endif %}
+HF_MODEL_PATH="${N17_CKPT_DIR}"
+[ -f "${HF_MODEL_PATH}/config.json" ] || die "[N1.7] ckpt config.json missing after download (${HF_MODEL_PATH})"
+SHARDS=$(find "${HF_MODEL_PATH}" -maxdepth 1 -name "model-*.safetensors" | wc -l | tr -d ' ')
+log "  [N1.7] ckpt at ${HF_MODEL_PATH} (config.json + ${SHARDS} shards)"
+
+log "[4.1/6] [N1.7] Pre-downloading Cosmos-Reason2-2B backbone (gated, ~4.9GB)..."
+"${SERVER_VENV}/bin/python" -c "
+from huggingface_hub import snapshot_download
+snapshot_download('nvidia/Cosmos-Reason2-2B')
+print('Cosmos-Reason2-2B downloaded')
+" 2>&1 | tee /tmp/gr00t_cosmos_download.log || {
+    log "[warn] [N1.7] Cosmos-Reason2-2B download failed — ZMQ server may fail at model load"
+    tail -10 /tmp/gr00t_cosmos_download.log | while IFS= read -r line; do log "  $line"; done
+}
+# HF_HUB_OFFLINE not set — N1.7 model load needs the backbone model_info/tokenizer API.
 {% else %}
 # Local mode: pre-download GR00T N1.6 G1 checkpoint
 {% if hf_model_revision %}
@@ -363,6 +503,23 @@ for TASK_IDX in $(seq 0 $((TASK_COUNT - 1))); do
             > /tmp/gr00t_bridge_task${TASK_IDX}.log 2>&1 &
         SERVER_PID=$!
         log "  Bridge started (PID: $SERVER_PID)"
+{% if server_n17 %}
+    else
+        log "  [N1.7 server] Starting ZMQ server from N1.7 venv (Cosmos backbone load ~5-8 min)..."
+        # N1.7 G1 (Step 2): server runs in the SECOND Isaac checkout ({{ server_isaac_groot_commit[:8] }})
+        # + its own uv-synced venv. --embodiment-tag UNITREE_G1 resolves to the value baked in the ckpt
+        # (unitree_g1_full_body_with_waist_height_nav_cmd). Sim client (WBC venv) uses the overlaid codec.
+        # CRITICAL: cd into the N1.7 checkout so the server's `import gr00t` resolves to the N1.7 tree
+        # (cwd is otherwise ${ISAAC_GROOT_DIR} = the N1.6 WBC checkout, which has its own ./gr00t).
+        nohup bash -c "cd '${ISAAC_GROOT_N17_DIR}' && exec '${SERVER_VENV}/bin/python' '${ISAAC_GROOT_N17_DIR}/gr00t/eval/run_gr00t_server.py' \
+            --model-path '${HF_MODEL_PATH}' \
+            --embodiment-tag '{{ server_embodiment_tag }}' \
+            --use-sim-policy-wrapper \
+            --port 8000" \
+            > /tmp/gr00t_zmq_task${TASK_IDX}.log 2>&1 &
+        SERVER_PID=$!
+    fi
+{% else %}
     else
         log "  [Local mode] Starting ZMQ server (model load ~3-5 min)..."
         # N1.6 G1: use shared WBC venv (VENV), not a separate server venv
@@ -374,10 +531,19 @@ for TASK_IDX in $(seq 0 $((TASK_COUNT - 1))); do
             > /tmp/gr00t_zmq_task${TASK_IDX}.log 2>&1 &
         SERVER_PID=$!
     fi
+{% endif %}
 
-    # Wait for ZMQ port :8000 (N1.6 model load: ~3-5 min, timeout 7.5 min)
+    # Wait for ZMQ port :8000. N1.6 model load ~3-5 min (90x5s=7.5 min). N1.7 (Cosmos-Reason2-2B
+    # backbone + 3B merged ckpt) is heavier → 144x5s=12 min.
+{% if server_n17 %}
+    ZMQ_MAX_ITERS=144
+    ZMQ_TIMEOUT_DESC="12 min"
+{% else %}
+    ZMQ_MAX_ITERS=90
+    ZMQ_TIMEOUT_DESC="7.5 min"
+{% endif %}
     ZMQ_READY=0
-    for i in $(seq 1 90); do
+    for i in $(seq 1 "${ZMQ_MAX_ITERS}"); do
         if ! kill -0 "$SERVER_PID" 2>/dev/null; then
             log "  [ERROR] ZMQ server PID $SERVER_PID died (Task ${TASK_IDX}). Last log:"
             tail -30 "/tmp/gr00t_zmq_task${TASK_IDX}.log" 2>/dev/null | while IFS= read -r line; do log "    $line"; done
@@ -393,7 +559,7 @@ for TASK_IDX in $(seq 0 $((TASK_COUNT - 1))); do
         fi
         sleep 5
     done
-    [ "$ZMQ_READY" -eq 1 ] || die "ZMQ :8000 not ready within 7.5 min (Task ${TASK_IDX})"
+    [ "$ZMQ_READY" -eq 1 ] || die "ZMQ :8000 not ready within ${ZMQ_TIMEOUT_DESC} (Task ${TASK_IDX})"
 
     touch /tmp/gr00t_task${TASK_IDX}_start.marker
     cd "${ISAAC_GROOT_DIR}"
@@ -507,7 +673,12 @@ for TASK_IDX in $(seq 0 $((TASK_COUNT - 1))); do
             printf "Robot:      Unitree G1 (%s)\n" "${ROBOT_TAG}"
             echo ""
             echo "--- Model ---"
+{% if server_n17 %}
+            printf "Model:      GR00T N1.7 G1 adapter (FT) — {{ server_hf_repo if server_hf_repo else server_s3_ckpt_uri }}\n"
+            printf "Server:     Isaac-GR00T {{ server_isaac_groot_commit[:8] }} (Cosmos-Reason2-2B)\n"
+{% else %}
             printf "Model:      {{ hf_repo }} (rev: {{ hf_model_revision[:8] if hf_model_revision else 'unpinned' }})\n"
+{% endif %}
             printf "Embodiment: %s\n"  "${EMBODIMENT}"
             echo ""
             echo "--- Rollout ---"

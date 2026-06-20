@@ -145,6 +145,36 @@ def generate_gr00t_g1(config: dict, resolved_grpc: str, resolved_vpc: str, dry_r
     """
     ctx = _build_gr00t_ctx(config, resolved_grpc, "gr00t-g1")
     ctx["collect"] = collect
+
+    # N1.7 rollout server (Step 2): if models/gr00t-g1.yaml has a `server:` block with a checkpoint
+    # source (either `hf_repo` for the public, reproducible path OR `s3_ckpt_uri` for a private bucket),
+    # the inference server loads the fine-tuned N1.7 G1 adapter ckpt in a SEPARATE venv (Isaac-GR00T
+    # 65cc4a), while the WBC sim keeps the N1.6 stack (77866395). Mutually exclusive with --collect
+    # (collect runs the N1.6 teacher) and bridge mode (remote inference). Absent → the N1.6 demo path.
+    server = config.get("server", {}) or {}
+    server_hf_repo = server.get("hf_repo", "").strip()
+    server_s3 = server.get("s3_ckpt_uri", "").strip()
+    server_n17 = bool(server_hf_repo or server_s3)
+    if server_hf_repo and server_s3:
+        print("[error] server.hf_repo and server.s3_ckpt_uri are mutually exclusive — pick one "
+              "checkpoint source for the N1.7 rollout server.", file=sys.stderr)
+        sys.exit(1)
+    if server_n17 and collect:
+        print("[error] server.* (N1.7 rollout) and --collect are mutually exclusive: "
+              "collect runs the N1.6 cloudwalk teacher, not the N1.7 adapter.", file=sys.stderr)
+        sys.exit(1)
+    if server_n17 and resolved_grpc:
+        print("[error] server.* (N1.7 local server) and bridge mode (remote_grpc_endpoint) "
+              "are mutually exclusive.", file=sys.stderr)
+        sys.exit(1)
+    ctx["server_n17"] = server_n17
+    ctx["server_hf_repo"] = server_hf_repo
+    ctx["server_hf_revision"] = server.get("hf_revision", "").strip()
+    ctx["server_s3_ckpt_uri"] = server_s3
+    ctx["server_isaac_groot_commit"] = server.get("isaac_groot_commit", "")
+    ctx["server_hf_token_ssm"] = server.get("hf_token_ssm", "/vla-simulator/hf-token")
+    ctx["server_embodiment_tag"] = server.get("embodiment_tag", "UNITREE_G1")
+
     if collect:
         if resolved_grpc:
             print("[error] --collect is local mode only (bridge delegates inference, no obs/action "

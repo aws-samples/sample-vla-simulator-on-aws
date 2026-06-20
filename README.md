@@ -106,6 +106,19 @@ This is **whole-body loco-manipulation**, not tabletop: the dual-view clips show
 | ![GR00T-G1 — loco-manip apple to plate (success)](docs/showcase/gr00t-g1/loco-manip-apple-to-plate-success.gif) | ![GR00T-G1 — loco-manip apple to plate (failure)](docs/showcase/gr00t-g1/loco-manip-apple-to-plate-failure.gif) |
 | MP4: [`gr00t-g1/loco-manip-apple-to-plate-success.mp4`](docs/showcase/gr00t-g1/loco-manip-apple-to-plate-success.mp4) | MP4: [`gr00t-g1/loco-manip-apple-to-plate-failure.mp4`](docs/showcase/gr00t-g1/loco-manip-apple-to-plate-failure.mp4) |
 
+##### Optional: run a fine-tuned GR00T **N1.7** Unitree-G1 adapter on the same sim
+
+The same `gr00t-g1` target can serve a fine-tuned **GR00T N1.7** Unitree-G1 adapter instead of the N1.6 demo checkpoint. NVIDIA published no N1.7 G1 checkpoint (`UNITREE_G1` is a post-train tag — the base gives ~0%), so this is a fine-tuned adapter. The default in [`models/gr00t-g1.yaml`](models/gr00t-g1.yaml) points `server.hf_repo` at a gated published checkpoint, [`andrewc76/GR00T-N1.7-G1-AppleToPlate`](https://huggingface.co/andrewc76/GR00T-N1.7-G1-AppleToPlate) (request access, then grant the deploy's Hugging Face token). To use your own instead, set `server.hf_repo` to your HF repo, or `server.s3_ckpt_uri` to an S3 bucket — collect demos with `--collect` (the N1.6 teacher above), fine-tune a G1 adapter on GR00T N1.7, and point the server at your merged checkpoint.
+
+The interesting part is that the N1.7 server (Isaac-GR00T `65cc4a`, `Gr00tN1d7` / Cosmos-Reason2-2B) and the WBC sim env (Isaac-GR00T `77866395`, the only commit where `GR00T-WholeBodyControl` still exists) **cannot share one venv** — so the deploy runs a **2-venv split** across the ZMQ `:8000` boundary and overlays the N1.7 wire codec (`msgpack_numpy`) onto the sim venv to keep obs/action serialization aligned. This is automatic when the `server:` block is present. See the comments in `models/gr00t-g1.yaml` for the design and the **action-horizon consistency** gotcha (a model/processor horizon mismatch is silent at export but crashes the rollout at step 0).
+
+In our run, a G1 adapter fine-tuned on demos collected from the N1.6 teacher reached `success_rate = 0.7` (7/10) on the same `LMPnPAppleToPlateDC_G1_gear_wbc` task — the N1.7 adapter clips below were produced exactly this way (your numbers will depend on your fine-tune).
+
+| N1.7 success — apple picked, walked left, placed on plate | N1.7 failure — grasp + walk OK, placement misses |
+|---|---|
+| ![GR00T-G1 N1.7 — loco-manip apple to plate (success)](docs/showcase/gr00t-g1/n17-loco-manip-apple-to-plate-success.gif) | ![GR00T-G1 N1.7 — loco-manip apple to plate (failure)](docs/showcase/gr00t-g1/n17-loco-manip-apple-to-plate-failure.gif) |
+| MP4: [`gr00t-g1/n17-loco-manip-apple-to-plate-success.mp4`](docs/showcase/gr00t-g1/n17-loco-manip-apple-to-plate-success.mp4) | MP4: [`gr00t-g1/n17-loco-manip-apple-to-plate-failure.mp4`](docs/showcase/gr00t-g1/n17-loco-manip-apple-to-plate-failure.mp4) |
+
 #### `gr00t` — GR00T N1.7 on LIBERO-10 (Franka Panda)
 
 *Video capture pending — KITCHEN_SCENE3/4 success rate is `1.0` on the validated runs (see [Expected Results](#expected-results)), but those rollout videos were not retained locally. Will backfill on the next `--vla gr00t` deploy.*
