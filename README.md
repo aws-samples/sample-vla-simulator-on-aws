@@ -12,7 +12,7 @@ Run Vision-Language-Action (VLA) robot simulation workloads on AWS GPU instances
 | **Simulation** | LIBERO / RoboCasa (robosuite + MuJoCo, headless EGL); Isaac Lab (OpenArm Lift-Cube collection) |
 | **Deploy** | AWS CDK + EC2 GPU (g6/g5, us-east-1; OpenArm needs a 4-GPU `.12xl`) |
 | **Results** | S3 (MP4 video + summary) + SNS email |
-| **Cleanup** | Auto-terminate EC2; run `destroy.py` for stack teardown |
+| **Cleanup** | Auto-terminate EC2; run `vlasim.py destroy` for stack teardown |
 
 ### Supported VLA Combinations
 
@@ -198,44 +198,50 @@ Supported regions: `us-east-1`, `us-west-2`, `ap-northeast-1`, `ap-northeast-2`,
 
 ## Deploy Targets
 
-`vlasim deploy` / `vlasim destroy` forward to `deploy.py` / `destroy.py`. The full
-per-target invocations (all also runnable directly as `python deploy.py ...`):
+Each target is one `vlasim deploy --vla <target>` (which runs the `doctor` preflight,
+then forwards every flag to `deploy.py` unchanged). The `--email` is only needed the
+first time, or if you skipped `init`.
 
 ```bash
 # GR00T N1.7 — LIBERO kitchen tasks (~120 min)
-python deploy.py --vla gr00t --email you@example.com
+python vlasim.py deploy --vla gr00t --email you@example.com
 
 # GR00T N1.6 + GR1 humanoid — RoboCasa tabletop tasks (~90 min)
-python deploy.py --vla gr00t-gr1 --email you@example.com
+python vlasim.py deploy --vla gr00t-gr1 --email you@example.com
 
 # GR00T N1.6 + Unitree G1 — whole-body loco-manipulation (GR00T-WholeBodyControl, ~20-30 min)
-python deploy.py --vla gr00t-g1 --email you@example.com
+python vlasim.py deploy --vla gr00t-g1 --email you@example.com
 
 # π0.5 — LIBERO spatial + object tasks (~4 hrs)
-python deploy.py --vla pi --email you@example.com
+python vlasim.py deploy --vla pi --email you@example.com
 
 # OpenVLA-OFT — LIBERO-10 long-horizon (~3 hrs, local mode only; default suite)
-python deploy.py --vla openvla-oft --email you@example.com
+python vlasim.py deploy --vla openvla-oft --email you@example.com
 
 # OpenVLA-OFT — LIBERO-Spatial short-horizon (~1.5 hrs)
-python deploy.py --vla openvla-oft --libero-suite spatial --email you@example.com
+python vlasim.py deploy --vla openvla-oft --libero-suite spatial --email you@example.com
 
 # Other short-horizon suites: object, goal
-python deploy.py --vla openvla-oft --libero-suite object --email you@example.com
-python deploy.py --vla openvla-oft --libero-suite goal   --email you@example.com
+python vlasim.py deploy --vla openvla-oft --libero-suite object --email you@example.com
+python vlasim.py deploy --vla openvla-oft --libero-suite goal   --email you@example.com
 
 # LAP-3B — LIBERO-Spatial (zero-shot cross-embodiment VLA, JAX policy server, ~1.5-2.5 hrs)
-python deploy.py --vla lap --email you@example.com
+python vlasim.py deploy --vla lap --email you@example.com
 
 # RLDX-1 (RLWRLD) — LIBERO (SOTA open VLA, MSAT/Qwen3-VL-8B, ZeroMQ server + sim client, ~80-120 min)
 # NON-COMMERCIAL weights (sim benchmarking) — AWS-internal enablement only.
-python deploy.py --vla rldx --email you@example.com
+python vlasim.py deploy --vla rldx --email you@example.com
 
 # OpenArm Lift-Cube — scripted ACT demo collection in Isaac Lab (HDF5 only; needs a 4-GPU instance)
-python deploy.py --vla openarm-lift-act --email you@example.com
+python vlasim.py deploy --vla openarm-lift-act --email you@example.com
 ```
 
 On first deploy you will receive an SNS subscription confirmation email — **click the link** to enable notifications.
+
+> **Direct invocation.** `vlasim deploy` is a thin wrapper — every command above also
+> runs as `python deploy.py --vla <target> ...` with the same flags, skipping the
+> `doctor` preflight. Use that if you've already run `doctor` and want to bypass it
+> (equivalently, `vlasim deploy --skip-doctor`).
 
 ---
 
@@ -290,16 +296,18 @@ Each `task-N/` folder contains:
 ## Cleanup
 
 ```bash
-python vlasim.py destroy --vla gr00t-g1   # or, equivalently:
-python destroy.py --vla gr00t
-python destroy.py --vla gr00t-gr1
-python destroy.py --vla gr00t-g1
-python destroy.py --vla pi
-python destroy.py --vla openvla-oft                         # default suite (10)
-python destroy.py --vla openvla-oft --libero-suite spatial  # non-default suite
-python destroy.py --vla lap
-python destroy.py --vla rldx
+python vlasim.py destroy --vla gr00t
+python vlasim.py destroy --vla gr00t-gr1
+python vlasim.py destroy --vla gr00t-g1
+python vlasim.py destroy --vla pi
+python vlasim.py destroy --vla openvla-oft                         # default suite (10)
+python vlasim.py destroy --vla openvla-oft --libero-suite spatial  # non-default suite
+python vlasim.py destroy --vla lap
+python vlasim.py destroy --vla rldx
 ```
+
+> `vlasim destroy` forwards to `destroy.py` unchanged — `python destroy.py --vla <target>`
+> works identically if you prefer to call it directly.
 
 The S3 results bucket is **retained** after stack deletion to preserve simulation outputs.
 
@@ -423,7 +431,7 @@ Bridge mode connects the simulation environment on EC2 to an external VLA model 
 #   bridge.remote_grpc_endpoint: ssm:/vla-hub/gr00t/n1-7/grpc-endpoint
 #   bridge.vpc_id: ssm:/vla-hub/vpc-id
 
-python deploy.py --vla gr00t --bridge
+python vlasim.py deploy --vla gr00t --bridge
 ```
 
 ### π0.5 bridge
@@ -433,7 +441,7 @@ python deploy.py --vla gr00t --bridge
 #   bridge.vpc_id: vpc-xxxxxxxxxxxxxxxxx
 #   bridge.nlb_endpoint: internal-xxx.elb.us-east-1.amazonaws.com:50052
 
-python deploy.py --vla pi --bridge
+python vlasim.py deploy --vla pi --bridge
 ```
 
 ### LAP-3B bridge
@@ -448,7 +456,7 @@ remote vla-hub LAP ECS task (port 50055). No local checkpoint download.
 #   bridge.nlb_endpoint: internal-xxx.elb.us-west-2.amazonaws.com:50055
 #                        or ssm:/vla-hub/lap/3b/grpc-endpoint
 
-python deploy.py --vla lap --bridge
+python vlasim.py deploy --vla lap --bridge
 ```
 
 > Bridge differs from π0.5 only in the wire contract: LAP uses a nested observation
