@@ -1,0 +1,136 @@
+# RLDX-1 (RLWRLD) × SimplerEnv configuration
+# Paper: "RLDX-1: A Dexterity-First Vision-Language-Action Foundation Model"
+#        arXiv:2605.03269 (RLWRLD, 2026)
+# Repo:  https://github.com/RLWRLD/RLDX-1 (code: Apache-2.0)
+# Goal:  SimplerEnv (Google Fractal real-robot embodiment) 1-click eval — a NEW capability
+#        no existing vla-simulator target covers (all others are LIBERO/RoboCasa/GR-1/Isaac;
+#        none use the OXE real-robot embodiments OXE_FRACTAL / OXE_BRIDGE_ORIG).
+#
+# CLI:   python deploy.py --vla rldx-simpler [--email YOUR@EMAIL.COM]
+#
+# Architecture: Multi-Stream Action Transformer (MSAT) on a Qwen3-VL-8B backbone (same model
+#   as the `rldx` LIBERO target — SIMPLER differs only in the sim client venv + dispatch fix).
+# Eval pattern: RLWRLD's own server + client split (their run_scripts/eval/simpler/):
+#   - main .venv (py3.10, torch 2.7.0+cu126): rldx/eval/run_rldx_server.py — ZeroMQ policy server
+#   - simpler_uv venv (py3.10):               rldx/eval/rollout_policy.py — SimplerEnv sim client
+#   Structurally identical to the `rldx` LIBERO target; SHARED template, branched by sim_id.
+#
+# LICENSE — NON-COMMERCIAL. Weights are under the RLWRLD Model License v1.0:
+#   intended use explicitly includes "simulation benchmarking" (this PoC qualifies).
+#   out-of-scope: commercial deployment. Keep outputs to AWS-internal enablement only.
+#   Weights are downloaded from HF at runtime (NOT vendored) → no non-commercial weight is
+#   committed. SimplerEnv/ManiSkill2_real2sim are cloned at runtime (MIT). See NOTICE +
+#   README Acknowledgments for the full attribution chain (RLWRLD + SimplerEnv/allenzren).
+
+model:
+  id: rldx-simpler
+  version: "FT-SIMPLER-GOOGLE"
+
+  # git ls-remote https://github.com/RLWRLD/RLDX-1.git HEAD → main == ecbfaf80 (2026-06-23).
+  # SAME pin as the rldx LIBERO target; independent per-yaml pin so a LIBERO re-pin can't
+  # silently move SIMPLER (session risk #10). The SIMPLER dispatch bug (FIX 4) lives at this
+  # commit and is unpatched on upstream HEAD.
+  rldx_commit: "ecbfaf80cd031dcc892186ed30465de3591047e6"
+
+  # HF checkpoint (SimplerEnv Google fine-tuned). eval_simpler.sh maps google_vm/google_va →
+  # RLWRLD/RLDX-1-FT-SIMPLER-GOOGLE (verified from run_scripts/eval/simpler/eval_simpler.sh).
+  # Pinned to the Gate-1-validated revision (g6.2xlarge L4 smoke, 2026-06-24: 100% SR over 10
+  # eps on google_robot_pick_coke_can, peak 16,986 MiB VRAM). lastModified 2026-05-06.
+  hf_repo: "RLWRLD/RLDX-1-FT-SIMPLER-GOOGLE"
+  hf_model_revision: "f59c79e17d387ea861679999969fe316a8310008"   # Gate-1 validated
+  # VLM backbone pulled by the checkpoint config at server load — pre-download in userdata so
+  # the first server load does not race the warmup timeout fetching ~16GB on a fresh instance.
+  backbone_hf_repo: "Qwen/Qwen3-VL-8B-Instruct"
+
+  # ── SimplerEnv sim parameterisation (consumed by generate_rldx → shared template) ──
+  sim_id: simpler
+  # setup_simpler.sh delegates to rldx/eval/sim/SimplerEnv/setup_SimplerEnv.sh, which builds the
+  # venv at rldx/eval/sim/SimplerEnv/simpler_uv/.venv (verified from both scripts @ ecbfaf80).
+  sim_setup_script: "run_scripts/eval/simpler/setup_simpler.sh"
+  sim_venv_subpath: "rldx/eval/sim/SimplerEnv/simpler_uv/.venv"
+  # FIX 5 (Gate-1) — external_dependencies/SimplerEnv has NO committed gitlink at pin ecbfaf80,
+  # so setup_SimplerEnv.sh's `git submodule update --init …/SimplerEnv` dies (pathspec). The
+  # template pre-clones this --recursive so setup's "already populated" fallback runs. URL =
+  # the .gitmodules entry (verified). The inner ManiSkill2_real2sim is pulled by --recursive.
+  sim_clone_url: "https://github.com/allenzren/SimplerEnv.git"
+  sim_clone_subpath: "external_dependencies/SimplerEnv"
+  # FIX 1 (broadened, Gate-1) — pins SimplerEnv requires that the full rldx dep install must NOT
+  # bump. Passed UNQUOTED into uv pip install (word-split). cv2 4.10.0.84 = setup_SimplerEnv pin;
+  # gymnasium 0.29.1 = SimplerEnv pin; numpy 1.26.4 = cluster pin.
+  sim_protect_pins: "gymnasium==0.29.1 numpy==1.26.4 opencv-python-headless==4.10.0.84"
+  # Env registration entrypoint (verified: rldx/eval/sim/SimplerEnv/simpler_env.py:227).
+  sim_register_module: "rldx.eval.sim.SimplerEnv.simpler_env"
+  sim_register_fn: "register_simpler_envs"
+  # FIX 8 (Gate-3) — SimplerEnv renders via SAPIEN/ManiSkill, which needs the Vulkan loader.
+  # The DLAMI ships the NVIDIA driver (libGLX_nvidia.so.0) but NOT libvulkan.so.1, so
+  # `import sapien.core` dies (observed on the first Gate-3 GPU run). Setting this makes the
+  # template install libvulkan1 + write the NVIDIA ICD/layer JSON ([2.5/8] block). LIBERO
+  # leaves it unset (MuJoCo/EGL, no Vulkan) → byte-identical. Source of truth:
+  # simpler-env/ManiSkill2_real2sim/docker/{Dockerfile,nvidia_icd.json,nvidia_layers.json}.
+  needs_vulkan: true
+
+  # run_rldx_server.py arguments. SAME server as LIBERO; SIMPLER runs STRICT (eval_simpler.sh
+  # passes NO --no-strict, unlike eval_libero.sh). server_extra_args is therefore EMPTY.
+  # NOTE — Gate-1 CONFIRMED: eval_simpler.sh passes `--num-inference-timesteps 10`, but the
+  # server REJECTS it at pin ecbfaf80 (tyro: "Unrecognized options: --num-inference-timesteps"
+  # → server never binds). i.e. RLWRLD's own eval_simpler.sh is broken at this pin; inference
+  # steps come from the checkpoint config. CORRECTLY OMITTED (server bound + ran 100% SR
+  # without it). Do NOT re-add. (Verified live, not from source: server stdout helptext box.)
+  embodiment_tag: "OXE_FRACTAL"   # Google Fractal (verified: embodiment_tags.py:35 = "fractal20220817_data")
+  server_extra_args: []
+  compile: ""                     # eager (same rationale as rldx.yaml — no sm_120 dependency)
+
+  # rollout_policy.py arguments (verified from run_scripts/eval/simpler/eval_simpler.sh google_vm):
+  # --max_episode_steps 300, --n_action_steps 2, --n_envs 5, --n_episodes 200.
+  # PoC trims n_episodes per task (200 = RLWRLD full eval → hours of GPU). Showcase needs only a
+  # handful of clips; bump per task in tasks[] below after Gate 1 confirms throughput.
+  max_episode_steps: 300
+  n_action_steps: 2
+  # n_envs: eval_simpler.sh uses 5 (AsyncVectorEnv spawn). System-RAM headroom on a 16GB xlarge
+  # is unmeasured for SIMPLER → start at 1 (the safe envelope, like rldx.yaml); bump to 5 on a
+  # larger-RAM instance after Gate 1. Single server either way.
+  n_envs: 1
+
+  # Result-card labels (cosmetic; shown in S3 per-video context txt + SNS summary).
+  robot_label: "Google Robot (SimplerEnv Fractal, OXE_FRACTAL embodiment)"
+  sim_label: "SimplerEnv (ManiSkill2_real2sim + SAPIEN/MuJoCo, headless EGL/xvfb)"
+
+  # Server warmup watchdog (Gate-3 run 2). The MSAT/Qwen3-VL-8B load up-casts ALL trainable
+  # params to fp32 *interleaved* with checkpoint-shard materialization → ~250-316s/shard × 3
+  # on g6.2xlarge (8 vCPU/32GB), ~17-18min cold (clean load, no OOM — measured). The default
+  # 900s (15min) watchdog killed a healthy load at shard 2/3. 2400s (40min) gives margin and
+  # stays well under creationpolicy_timeout PT180M. LIBERO keeps the 900s default (faster load).
+  server_warmup_timeout: 2400
+
+instance:
+  # [확인 필요] SIMPLER VRAM/RAM not yet measured (Gate 1). SIMPLER renders via SAPIEN+ManiSkill;
+  # the policy server is the same ~17GB MSAT/Qwen3-VL-8B as LIBERO (Phase-0 measured on L40S).
+  # Start on the LIBERO-proven single-GPU envelope but lead with .2xlarge for more system RAM
+  # (SAPIEN renderer + 5-env spawn headroom). g6/g5 = L4/A10G 24GB.
+  preferred: [g6.2xlarge, g5.2xlarge, g6.xlarge, g5.xlarge]
+  ebs_gb: 200          # repo + 2 venvs + ManiSkill2_real2sim + 13.84G ckpt + Qwen backbone + videos
+  ebs_gb_bridge: 200   # bridge not supported — same value
+  # Conservative initial smoke. setup_SimplerEnv builds a 3rd venv + clones ManiSkill2_real2sim;
+  # server warmup ~3min; SAPIEN first render is slow. Tighten after Gate 1 measures real wall-clock.
+  creationpolicy_timeout: PT180M
+
+# Evaluation tasks — flat list (LAP/rldx style). env_name uses the `simpler_env_google/<task>`
+# namespace from register_simpler_envs() (verified: simpler_env.py:227-240, image 256×320,
+# GoogleFractalEnv). The `simpler_env_google_va/` namespace is NOT registered at this pin →
+# google_va variants are broken; smoke uses google_vm (or widowx) ONLY.
+# eval_simpler.sh google_vm tasks: pick_coke_can, move_near, open_drawer, close_drawer.
+# PoC: 2 visually-distinct manipulation tasks, small n for the first showcase pass.
+tasks:
+  - suite: simpler_google_vm
+    env_name: "simpler_env_google/google_robot_pick_coke_can"
+    num_episodes: 5
+    description: "SimplerEnv Google-VM — pick up coke can (real-robot Fractal embodiment, distinct from all LIBERO/RoboCasa showcase clips)"
+  - suite: simpler_google_vm
+    env_name: "simpler_env_google/google_robot_move_near"
+    num_episodes: 5
+    description: "SimplerEnv Google-VM — move near target object (real-robot Fractal embodiment)"
+
+# Bridge mode (vla-hub serving) NOT supported — same rationale as the rldx LIBERO target
+# (fused-kernel/ZeroMQ serving conflicts with vla-hub guardrails). See accounts/startups/rlwrld/README.md §4.
+bridge:
+  enabled: false

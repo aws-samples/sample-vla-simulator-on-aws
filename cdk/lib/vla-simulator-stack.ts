@@ -59,6 +59,11 @@ const INSTANCE_TYPES: Record<string, string[]> = {
   // Phase 0 GATE PASS (2026-06-19): eager rollout peak VRAM ~17GB on L40S(sm_89) → L4 24GB FITS
   // (~6.6GB headroom). Single-GPU xlarge sufficient; .2xlarge offers more system RAM for n_envs>1.
   rldx:          ['g6.xlarge',   'g6.2xlarge',  'g5.xlarge',  'g5.2xlarge'],
+  // SIMPLER = same ~17GB MSAT/Qwen3-VL-8B policy server as rldx, + SAPIEN/ManiSkill renderer.
+  // [확인 필요] VRAM/RAM unmeasured (Gate 1) — lead with .2xlarge for SAPIEN + 5-env-spawn RAM
+  // headroom, single-GPU xlarge kept as fallback. MUST have an explicit entry: the
+  // `?? INSTANCE_TYPES['gr00t']` fallback below would otherwise pick gr00t's 12xlarge (wrong+costly).
+  'rldx-simpler': ['g6.2xlarge', 'g5.2xlarge',  'g6.xlarge',  'g5.xlarge'],
   // Isaac Sim 5.1 + --enable_cameras render is heavy → 12xlarge tier (mirrors gr00t-gr1).
   'openarm-isaac': ['g6.12xlarge', 'g5.12xlarge', 'g6.2xlarge', 'g5.2xlarge'],
   // 16 collection envs × 2 TiledCameras → ResourceLoader needs >24 GB device mem, so a single-GPU

@@ -14,6 +14,7 @@ generate.py — model yaml + simulator-config.yaml 읽어 assets/userdata/{vla}.
     python generate.py --vla openvla-oft [--config simulator-config.yaml] [--dry-run]
     python generate.py --vla lap         [--config simulator-config.yaml] [--dry-run]
     python generate.py --vla rldx        [--config simulator-config.yaml] [--dry-run]
+    python generate.py --vla rldx-simpler [--config simulator-config.yaml] [--dry-run]
     python generate.py --vla openarm-isaac [--config simulator-config.yaml] [--dry-run]
     python generate.py --vla openarm-lift-act [--config simulator-config.yaml] [--dry-run]
 """
@@ -245,16 +246,25 @@ def generate_openvla_oft(config: dict, libero_suite: str, dry_run: bool) -> str:
     return env.get_template("openvla-oft-userdata.sh.j2").render(**ctx)
 
 
-def generate_rldx(config: dict, dry_run: bool) -> str:
-    """RLDX-1 (RLWRLD): MSAT/Qwen3-VL-8B × LIBERO. Local mode only.
+def generate_rldx(config: dict, dry_run: bool, vla: str = "rldx") -> str:
+    """RLDX-1 (RLWRLD): MSAT/Qwen3-VL-8B × {LIBERO | SimplerEnv | ...}. Local mode only.
 
-    Mirrors the server+client two-venv topology RLWRLD ships in run_scripts/eval/libero/
-    (verified in Phase 0): main .venv ZeroMQ policy server + libero_uv venv sim client.
+    ONE shared template (rldx-userdata.sh.j2) parameterised by `sim_id` (openvla-oft
+    pattern), NOT a per-sim template fork. The server+client two-venv plumbing
+    (cfn_signal / die / S3 upload / SNS / ZeroMQ warmup) is sim-agnostic single-source;
+    only the [5/8] sim-venv setup+fix block, the server args, the rollout values, and
+    the result labels diverge by sim. LIBERO (sim_id default) renders byte-identically
+    to the pre-parameterisation template — guarded by the dry-run regression in .temp/.
+
+    `vla` (= the model id / CDK context value) drives the CloudWatch log_prefix so the
+    `/rldx/userdata` log group matches the stack's `/${vla}/*` IAM grant. A mismatch
+    deploys fine but silently drops logs (no `aws logs tail`); see session risk #9.
+
     No bridge assets (vla-hub serving deferred — fused-kernel guardrail conflict).
     """
     tasks = config.get("tasks", [])
     if not tasks:
-        print("[error] models/rldx.yaml에 tasks 항목이 없습니다.", file=sys.stderr)
+        print(f"[error] models/{vla}.yaml에 tasks 항목이 없습니다.", file=sys.stderr)
         sys.exit(1)
 
     tasks_json = _tasks_json_for_bash(tasks)
@@ -274,6 +284,42 @@ def generate_rldx(config: dict, dry_run: bool) -> str:
         "max_episode_steps": model.get("max_episode_steps", 720),
         "n_action_steps": model.get("n_action_steps", 8),
         "n_envs": model.get("n_envs", 1),
+        # ── sim parameterisation (empty/default → LIBERO, byte-identical) ──
+        # log_prefix = vla so the CW log group matches the stack's /${vla}/* IAM grant.
+        "log_prefix": vla,
+        "sim_id": model.get("sim_id", "libero"),
+        "sim_venv_subpath": model.get("sim_venv_subpath", ""),
+        "sim_setup_script": model.get("sim_setup_script", ""),
+        "sim_register_module": model.get("sim_register_module", ""),
+        "sim_register_fn": model.get("sim_register_fn", ""),
+        # FIX 5 — non-LIBERO sims whose external_dependencies/<sim> gitlink is absent at the pin
+        # (SimplerEnv) must be pre-cloned --recursive so the setup script's already-populated
+        # fallback runs. Empty for LIBERO (vendored dir present) → template skips the pre-clone.
+        "sim_clone_url": model.get("sim_clone_url", ""),
+        "sim_clone_subpath": model.get("sim_clone_subpath", ""),
+        # FIX 1 (broadened) — pins the full rldx-dep install must not bump (sim renderer pins).
+        "sim_protect_pins": model.get("sim_protect_pins", ""),
+        # FIX 8 — SAPIEN/ManiSkill sims (SimplerEnv) render via Vulkan, which the DLAMI does
+        # NOT ship (no libvulkan.so.1 loader, no ICD JSON) → `import sapien.core` dies with
+        # `ImportError: libvulkan.so.1`. Install the Vulkan loader + point the NVIDIA ICD at
+        # the pre-installed driver (libGLX_nvidia.so.0). Empty for LIBERO/MuJoCo sims (no
+        # Vulkan) → template skips the block, LIBERO render stays byte-identical.
+        # Source of truth: simpler-env/ManiSkill2_real2sim/docker/{Dockerfile,nvidia_icd.json}.
+        "needs_vulkan": model.get("needs_vulkan", ""),
+        # server CLI args appended after --use-sim-policy-wrapper. LIBERO ships --no-strict;
+        # SIMPLER (eval_simpler.sh) runs strict (no flag). NOTE: eval_simpler.sh ALSO passes
+        # --num-inference-timesteps 10, but that is NOT a ServerConfig field at pin ecbfaf80
+        # (tyro rejects unknown args → server crash); inference steps come from the ckpt
+        # config. Omitted by default; re-add via server_extra_args after a Gate-1 check.
+        "server_extra_args": model.get("server_extra_args", ["--no-strict"]),
+        "robot_label": model.get("robot_label", ""),
+        "sim_label": model.get("sim_label", ""),
+        # Server warmup watchdog (seconds). Default 900 (15min) = LIBERO byte-identical.
+        # SIMPLER (Gate-3 run 2): MSAT/Qwen3-VL-8B shard load is interleaved with an fp32
+        # up-cast of all trainable params → ~250-316s/shard × 3 on g6.2xlarge (8 vCPU/32GB),
+        # ~17-18min cold. Raised for SIMPLER so the watchdog doesn't kill a healthy load
+        # mid-shard. Stays well under creationpolicy_timeout (PT180M).
+        "server_warmup_timeout": int(model.get("server_warmup_timeout", 900)),
     }
 
     env = Environment(loader=FileSystemLoader(str(TEMPLATES_DIR)), keep_trailing_newline=True)  # nosec B701 - shell script template
@@ -432,7 +478,7 @@ def generate_pi(config: dict, resolved_vpc: str, resolved_nlb: str, dry_run: boo
 
 def main():
     parser = argparse.ArgumentParser(description="vla-simulator UserData 스크립트 생성")
-    parser.add_argument("--vla", required=True, choices=["gr00t", "gr00t-gr1", "gr00t-g1", "pi", "openvla-oft", "lap", "rldx", "openarm-isaac", "openarm-lift-act"], help="VLA 모델")
+    parser.add_argument("--vla", required=True, choices=["gr00t", "gr00t-gr1", "gr00t-g1", "pi", "openvla-oft", "lap", "rldx", "rldx-simpler", "openarm-isaac", "openarm-lift-act"], help="VLA 모델")
     parser.add_argument(
         "--config", default=str(BASE_DIR / "simulator-config.yaml"),
         help="공통 설정 파일 경로 (기본: simulator-config.yaml)",
@@ -474,8 +520,8 @@ def main():
         rendered = generate_openvla_oft(config, args.libero_suite, args.dry_run)
     elif args.vla == "lap":
         rendered = generate_lap(config, args.resolved_nlb, args.dry_run)
-    elif args.vla == "rldx":
-        rendered = generate_rldx(config, args.dry_run)
+    elif args.vla in ("rldx", "rldx-simpler"):
+        rendered = generate_rldx(config, args.dry_run, vla=args.vla)
     elif args.vla == "openarm-isaac":
         rendered = generate_openarm_isaac(config, args.dry_run)
     elif args.vla == "openarm-lift-act":

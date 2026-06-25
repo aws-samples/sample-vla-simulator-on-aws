@@ -28,9 +28,12 @@ Run Vision-Language-Action (VLA) robot simulation workloads on AWS GPU instances
 | `openvla-oft` | `10` (default, alias `long`) | OpenVLA-OFT-7B (LIBERO-10 fine-tune) | LIBERO-10 long-horizon | Franka Panda (7-DOF) | `OpenVLA-OFT-Demo` |
 | `lap` | — | LAP-3B (PaliGemma-3B + Flow Matching, JAX) | LIBERO-Spatial | Franka Panda (7-DOF) | `LAP-Demo` |
 | `rldx` | — | RLDX-1 (RLWRLD MSAT / Qwen3-VL-8B, eager)¹ | LIBERO-10 long-horizon | Franka Panda (7-DOF) | `RLDX-Demo` |
+| `rldx-simpler` | — | RLDX-1 (RLWRLD MSAT / Qwen3-VL-8B, eager)¹ ² | SimplerEnv Google-VM (Fractal) | Google Robot (OXE_FRACTAL real-robot embodiment) | `RLDX-Simpler-Demo` |
 | `openarm-lift-act` | — | Scripted state machine (ACT data collection) | Isaac Lab Lift-Cube | OpenArm (unimanual, 7-DOF + gripper) | `OpenArm-Lift-ACT-Demo` |
 
 ¹ RLDX-1 weights are under the **RLWRLD Model License v1.0 (non-commercial)**; "simulation benchmarking" is an explicit intended use. AWS-internal enablement / benchmarking only — not for customer-facing commercial positioning. Weights are downloaded from Hugging Face at runtime (not vendored).
+
+² `rldx-simpler` is the same RLDX-1 model on SimplerEnv (Google Fractal real-robot embodiment, `OXE_FRACTAL`) instead of LIBERO — the one target here that exercises a real-robot OXE embodiment rather than a simulated Panda/humanoid. Setup clones SimplerEnv + ManiSkill2_real2sim at runtime (MIT). End-to-end validated 2026-06-24 (`g6.2xlarge` L4, full `deploy.py` 1-shot smoke); checkpoint pinned at `@f59c79e1`. See the [showcase](#rldx-simpler--rldx-1-rlwrld-on-simplerenv-google-fractal-real-robot-embodiment) and [Expected Results](#expected-results).
 
 ### Showcase — VLA Rollouts
 
@@ -85,6 +88,18 @@ RLDX-1 is a Korea-origin SOTA open VLA (MSAT action head on a Qwen3-VL-8B backbo
 > - `KITCHEN_SCENE6` (SR 0.8) is **marginal even when it succeeds**: successful episodes range from a clean 32 steps to a labored 47 steps, while the failure runs the full 90-step cap (a *timeout*, not a hard error). The scene also contains a second (grey) mug as a distractor next to the yellow/white target. A near-cap success is one perturbation away from a timeout — so treat 0.8 here as "works, but not yet deployment-margin," not as a 4-in-5 guarantee of reliable execution.
 >
 > Takeaway for demos: pair the SR number with the **step-count spread** (in `simulation_results.csv`) and watch the failure clip — a high SR with episodes clustered near the step cap is a weaker result than the same SR with short, consistent runs.
+
+#### `rldx-simpler` — RLDX-1 (RLWRLD) on SimplerEnv Google Fractal (real-robot embodiment)
+
+Same RLDX-1 checkpoint family as `rldx` above, but evaluated on **SimplerEnv** (ManiSkill2_real2sim + SAPIEN) with the Google Robot **`OXE_FRACTAL`** embodiment — the one target here that exercises a *real-robot* Open X-Embodiment embodiment rather than a simulated Panda/humanoid. Served eager via the same ZeroMQ policy server + sim client (two venvs), `g6.2xlarge` L4 sm_89, validated 2026-06-24 via a full `deploy.py` 1-shot smoke. Two Google-VM tasks: `google_robot_pick_coke_can` `success_rate = 1.0` (5/5) and `google_robot_move_near` `success_rate = 1.0` (5/5). Weights are **non-commercial** (RLWRLD Model License v1.0) — sim benchmarking only.
+
+> **Clips are shown at 0.25× (slowed 4×)**, with the playback rate overlaid bottom-left. These are *atomic* Google-robot tasks — each episode runs only 10–25 sim steps, so at native speed it finishes in ~1 second. The 4× slowdown makes the motion legible and paces these clips with the long-horizon GR-1 clips below (up to 720 steps). No frames are dropped or trimmed; only the timestamps are stretched.
+
+| Success — `google_robot_pick_coke_can` (SR 1.0, 5/5) | Success — `google_robot_move_near` (SR 1.0, 5/5) |
+|---|---|
+| ![RLDX-1 — pick coke can (SimplerEnv Fractal, success)](docs/showcase/rldx-simpler/simpler-google-pick-coke-can-success.gif) | ![RLDX-1 — move near (SimplerEnv Fractal, success)](docs/showcase/rldx-simpler/simpler-google-move-near-success.gif) |
+| MP4: [`rldx-simpler/simpler-google-pick-coke-can-success.mp4`](docs/showcase/rldx-simpler/simpler-google-pick-coke-can-success.mp4) | MP4: [`rldx-simpler/simpler-google-move-near-success.mp4`](docs/showcase/rldx-simpler/simpler-google-move-near-success.mp4) |
+| _Tight and consistent: episodes complete in 10–25 env-steps (shown at 0.25×)._ | _Real-robot Fractal embodiment — distinct from every LIBERO/RoboCasa clip above (shown at 0.25×)._ |
 
 #### `gr00t-gr1` — GR00T N1.6 on RoboCasa GR1 humanoid (22-DOF)
 
@@ -245,6 +260,10 @@ python vlasim.py deploy --vla lap --email you@example.com
 # NON-COMMERCIAL weights (sim benchmarking) — AWS-internal enablement only.
 python vlasim.py deploy --vla rldx --email you@example.com
 
+# RLDX-1 (RLWRLD) — SimplerEnv Google-VM (real-robot OXE_FRACTAL embodiment, ~35-45 min)
+# NON-COMMERCIAL weights (sim benchmarking) — AWS-internal enablement only.
+python vlasim.py deploy --vla rldx-simpler --email you@example.com
+
 # OpenArm Lift-Cube — scripted ACT demo collection in Isaac Lab (HDF5 only; needs a 4-GPU instance)
 python vlasim.py deploy --vla openarm-lift-act --email you@example.com
 ```
@@ -281,6 +300,9 @@ aws logs tail /lap/userdata --follow --region us-east-1
 
 # RLDX-1 logs
 aws logs tail /rldx/userdata --follow --region us-east-1
+
+# RLDX-1 SimplerEnv logs
+aws logs tail /rldx-simpler/userdata --follow --region us-east-1
 ```
 
 ---
@@ -317,6 +339,7 @@ python vlasim.py destroy --vla openvla-oft                         # default sui
 python vlasim.py destroy --vla openvla-oft --libero-suite spatial  # non-default suite
 python vlasim.py destroy --vla lap
 python vlasim.py destroy --vla rldx
+python vlasim.py destroy --vla rldx-simpler
 ```
 
 > `vlasim destroy` forwards to `destroy.py` unchanged — `python destroy.py --vla <target>`
@@ -343,6 +366,8 @@ The S3 results bucket is **retained** after stack deletion to preserve simulatio
 | `openvla-oft --libero-suite 10` | libero_10 (long-horizon) | 94.5% (paper Table I) | validated 2026-05-04 |
 | `lap` | libero_spatial | ~85-95% (paper Table III, LIBERO fine-tuned) | validated 2026-05-17 — 0.98 @ 5 trials/task |
 | `rldx` | libero_spatial (single task) | 97.8% LIBERO avg (paper, SOTA) | validated 2026-06-20 — 1.0 (5/5 ep, eager, g6.xlarge L4 sm_89, full `deploy.py` smoke) |
+| `rldx-simpler` | simpler_env_google/google_robot_pick_coke_can (Google-VM Fractal) | 81.5% Google-VM (paper README) | validated 2026-06-24 — 1.0 (5/5 ep, eager, g6.2xlarge L4, full `deploy.py` 1-shot smoke) |
+| `rldx-simpler` | simpler_env_google/google_robot_move_near (Google-VM Fractal) | 81.5% Google-VM (paper README) | validated 2026-06-24 — 1.0 (5/5 ep, eager, g6.2xlarge L4, full `deploy.py` 1-shot smoke) |
 
 **Validated results (us-east-1, g6.12xlarge / g5.xlarge / g6.xlarge):**
 - GR00T N1.7: KITCHEN_SCENE3 = 1.0 (5/5), KITCHEN_SCENE4 = 1.0 (3/3)
@@ -535,4 +560,24 @@ Use Spot instances via `deploy.py --spot` (not yet implemented) for 60–70% sav
 - [openpi](https://github.com/Physical-Intelligence/openpi) — Physical Intelligence π0.5
 - [openvla-oft](https://github.com/moojink/openvla-oft) — OpenVLA-OFT (Optimized Fine-Tuning)
 - [lap](https://github.com/lihzha/lap) — LAP: Language-Action Pre-Training (zero-shot cross-embodiment, JAX)
+- [RLDX-1](https://github.com/RLWRLD/RLDX-1) — RLWRLD dexterity-first VLA (MSAT / Qwen3-VL-8B, Apache-2.0 code)
 - [LIBERO](https://libero-project.github.io/) — Long-horizon robot benchmark
+- [SimplerEnv](https://github.com/allenzren/SimplerEnv) + [ManiSkill2_real2sim](https://github.com/allenzren/ManiSkill2_real2sim) — real-to-sim eval for Google Fractal / WidowX Bridge (MIT)
+
+---
+
+## Acknowledgments & Licensing
+
+This sample's own code (CDK, generators, templates) is **MIT-0** (see `LICENSE`). It orchestrates several third-party models and simulators, each under its own license — pulled at **runtime** (not vendored in this repo):
+
+| Component | Used by | License | Notes |
+|-----------|---------|---------|-------|
+| NVIDIA Isaac-GR00T (N1.7 / N1.6) | `gr00t*` | NVIDIA license | weights from Hugging Face |
+| Physical Intelligence openpi (π0.5) | `pi`, `openarm-isaac` | Apache-2.0 | |
+| OpenVLA-OFT | `openvla-oft` | MIT | |
+| LAP-3B | `lap` | MIT (code) | |
+| **RLDX-1 (RLWRLD)** | `rldx`, `rldx-simpler` | **code Apache-2.0; weights RLWRLD Model License v1.0 (NON-COMMERCIAL)** | "simulation benchmarking" is an explicit intended use. AWS-internal enablement / benchmarking only — not for customer-facing commercial positioning. |
+| LIBERO | LIBERO targets | MIT | |
+| SimplerEnv + ManiSkill2_real2sim | `rldx-simpler` | MIT | cloned at runtime by `setup_SimplerEnv.sh` |
+
+The `rldx`/`rldx-simpler` targets are built on **RLDX-1 by [RLWRLD](https://github.com/RLWRLD/RLDX-1)** — gratefully acknowledged. RLDX-1's eval harness vendors LIBERO, SimplerEnv, RoboCasa, and GR-1 task suites as submodules (all MIT); this sample clones the RLDX-1 repo at a pinned commit at runtime and applies small in-place runtime fixes (dependency pins + a SimplerEnv dispatch patch) to the clone only — the upstream repo is never modified and no model weights are committed here.

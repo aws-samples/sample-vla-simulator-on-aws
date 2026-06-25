@@ -1,4 +1,25 @@
-GR00T Enablement Pack
+VLA Simulator on AWS
 Copyright 2025 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 
 This sample code is made available under the MIT-0 license. See the LICENSE file.
+
+------------------------------------------------------------------------------
+Third-party components (pulled at RUNTIME by the deploy scripts — NOT vendored
+in this repository). Each is governed by its own license:
+
+- NVIDIA Isaac-GR00T (N1.7 / N1.6) — NVIDIA license. github.com/NVIDIA/Isaac-GR00T
+- Physical Intelligence openpi (pi0.5) — Apache-2.0. github.com/Physical-Intelligence/openpi
+- OpenVLA-OFT — MIT. github.com/moojink/openvla-oft
+- LAP-3B — MIT (code). github.com/lihzha/lap
+- LIBERO — MIT. github.com/Lifelong-Robot-Learning/LIBERO
+- SimplerEnv + ManiSkill2_real2sim — MIT. github.com/allenzren/SimplerEnv
+
+- RLDX-1 (RLWRLD) — github.com/RLWRLD/RLDX-1
+    * Code: Apache-2.0, Copyright (c) RLWRLD.
+    * Model weights (RLWRLD/RLDX-1-FT-*): RLWRLD Model License v1.0 — NON-COMMERCIAL.
+      "simulation benchmarking" is an explicit intended use; commercial deployment
+      is out of scope. Used here for AWS-internal enablement / benchmarking only.
+    * The rldx / rldx-simpler targets clone the RLDX-1 repo at a pinned commit at
+      runtime and apply small in-place fixes to that clone only (dependency pins and a
+      SimplerEnv dispatch patch). The upstream repository is not modified, and no model
+      weights are committed to this repository (they download from Hugging Face at runtime).

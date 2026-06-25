@@ -23,8 +23,10 @@ set -euo pipefail
 
 RLDX_DIR=/home/ubuntu/RLDX-1
 RLDX_CKPT_DIR=/home/ubuntu/.cache/rldx/ckpt
-# RLWRLD's setup_libero.sh builds this venv at a fixed in-repo path:
-LIBERO_VENV=${RLDX_DIR}/rldx/eval/sim/LIBERO/libero_uv/.venv
+# Sim client venv (RLWRLD's setup_*.sh builds it at a fixed in-repo path).
+# LIBERO_VENV is the historical name; for non-LIBERO sims (sim_venv_subpath set) it
+# holds that sim's venv (e.g. SimplerEnv's simpler_uv/.venv) — same variable, shared plumbing.
+LIBERO_VENV=${RLDX_DIR}/{{ sim_venv_subpath if sim_venv_subpath else 'rldx/eval/sim/LIBERO/libero_uv/.venv' }}
 VIDEO_BASE_DIR=/tmp/rldx-videos
 RUN_ID=$(date '+%Y-%m-%d-%H%M')
 
@@ -153,7 +155,10 @@ done
 
 # ── [1.5/8] CloudWatch Logs agent setup ──────────────────────────
 log "[1.5/8] Setting up CloudWatch Logs agent..."
-CW_LOG_GROUP="/rldx/userdata"
+# Log group MUST match the stack's IAM grant (/${vla}/* — see cdk/lib logGroupPrefix).
+# A mismatch deploys fine but silently drops logs → `aws logs tail` returns nothing
+# (session risk #9). log_prefix is the vla id, so rldx→/rldx, rldx-simpler→/rldx-simpler.
+CW_LOG_GROUP="/{{ log_prefix }}/userdata"
 if [ -f /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl ]; then
     cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json << 'CWEOF'
 {
@@ -163,7 +168,7 @@ if [ -f /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl ]; then
         "collect_list": [
           {
             "file_path": "/var/log/rldx-userdata.log",
-            "log_group_name": "/rldx/userdata",
+            "log_group_name": "/{{ log_prefix }}/userdata",
             "log_stream_name": "{instance_id}",
             "timezone": "UTC"
           }
@@ -187,7 +192,64 @@ fi
 log "[2/8] Checking GPU driver..."
 nvidia-smi -L 2>&1 | tee /tmp/rldx_nvidia.log \
     || log "[warn] nvidia-smi failed — verify DLAMI (continuing with EGL headless)"
-
+{% if needs_vulkan %}
+# ── [2.5/8] FIX 8: Vulkan loader + NVIDIA ICD ({{ sim_id }} renders via SAPIEN) ──
+# The DLAMI ships the NVIDIA driver (libGLX_nvidia.so.0) but NOT the Vulkan loader,
+# so SAPIEN's `import sapien.core` dies with `ImportError: libvulkan.so.1`. LIBERO/MuJoCo
+# sims skip this block (needs_vulkan empty). Source of truth (verified, not guessed):
+# simpler-env/ManiSkill2_real2sim/docker/{Dockerfile,nvidia_icd.json,nvidia_layers.json}.
+log "[2.5/8] FIX 8: installing Vulkan loader + NVIDIA ICD ({{ sim_id }} needs SAPIEN/Vulkan)..."
+APT_RETRY=0
+until apt-get install -y --no-install-recommends -o DPkg::Lock::Timeout=300 \
+    libvulkan1 vulkan-tools \
+    2>&1 | tee /tmp/rldx_fix8_vulkan.log; do
+    APT_RETRY=$((APT_RETRY + 1))
+    [ $APT_RETRY -ge 3 ] && die "FIX 8: libvulkan1 install failed after 3 retries"
+    log "[warn] FIX 8 apt install failed (attempt $APT_RETRY), retrying in 30s..."
+    sleep 30
+done
+# ICD: tell the loader where the NVIDIA driver's Vulkan entry point is (api_version per
+# the verified ManiSkill2_real2sim docker asset; libGLX_nvidia.so.0 = DLAMI-preinstalled).
+mkdir -p /usr/share/vulkan/icd.d /etc/vulkan/implicit_layer.d
+cat > /usr/share/vulkan/icd.d/nvidia_icd.json << 'VKICDEOF'
+{
+    "file_format_version" : "1.0.0",
+    "ICD": {
+        "library_path": "libGLX_nvidia.so.0",
+        "api_version" : "1.2.155"
+    }
+}
+VKICDEOF
+cat > /etc/vulkan/implicit_layer.d/nvidia_layers.json << 'VKLAYEREOF'
+{
+    "file_format_version" : "1.0.0",
+    "layer": {
+        "name": "VK_LAYER_NV_optimus",
+        "type": "INSTANCE",
+        "library_path": "libGLX_nvidia.so.0",
+        "api_version" : "1.2.155",
+        "implementation_version" : "1",
+        "description" : "NVIDIA Optimus layer",
+        "functions": {
+            "vkGetInstanceProcAddr": "vk_optimusGetInstanceProcAddr",
+            "vkGetDeviceProcAddr": "vk_optimusGetDeviceProcAddr"
+        },
+        "enable_environment": {
+            "__NV_PRIME_RENDER_OFFLOAD": "1"
+        },
+        "disable_environment": {
+            "DISABLE_LAYER_NV_OPTIMUS_1": ""
+        }
+    }
+}
+VKLAYEREOF
+# Sanity-probe the Vulkan device (non-fatal: SAPIEN can still fall back to EGL/CPU; the
+# real gate is the [5/8] `import sapien.core` self-test below).
+vulkaninfo --summary 2>&1 | grep -iE "deviceName|driverName|apiVersion" | head -5 \
+    | tee -a /tmp/rldx_fix8_vulkan.log \
+    || log "[warn] vulkaninfo probe inconclusive — relying on [5/8] sapien import gate"
+log "  FIX 8 applied — Vulkan loader + NVIDIA ICD installed"
+{% endif %}
 # ── [3/8] uv install + RLDX-1 repo clone ───────────────────────────
 log "[3/8] Installing uv (DLAMI does not pre-install)..."
 if ! command -v uv >/dev/null 2>&1; then
@@ -237,6 +299,7 @@ print('flash_attn:', flash_attn.__version__)
 " 2>&1 | tee /tmp/rldx_main_import_check.log \
     || die "main venv import/CUDA check failed (see /tmp/rldx_main_import_check.log)"
 
+{% if sim_id == 'libero' -%}
 # ── [5/8] LIBERO sim venv (RLWRLD setup_libero.sh + 3 required fixes) ──
 # Phase 0 finding: the pinned commit's setup_libero.sh builds the libero_uv venv but its
 # final `register_libero_envs` self-test FAILS as-is (it installs rldx --no-deps and pins
@@ -313,6 +376,215 @@ print('ROLLOUT_IMPORTS_OK + gym.make OK:', os.environ['RLDX_VERIFY_ENV'])
 "
 ) 2>&1 | tee /tmp/rldx_libero_import_check.log \
     || die "libero_uv venv import/gym.make check failed (see /tmp/rldx_libero_import_check.log)"
+{% else %}
+# ── [5/8] {{ sim_id }} sim venv (RLWRLD {{ sim_setup_script }} + FIX 1/2 + FIX 4/5/6/7) ──
+# Mirrors the LIBERO branch (same server+client topology), with the sim-specific deltas
+# VALIDATED on a g6.2xlarge L4 Gate-1 smoke @ {{ rldx_commit[:8] if rldx_commit else 'HEAD' }}
+# (100% SR over 10 eps on google_robot_pick_coke_can; peak 16,986 MiB VRAM; NOT assumed):
+#   • setup script = {{ sim_setup_script }} (builds {{ sim_venv_subpath }}).
+#   • FIX 5 (SIMPLER-only) PRE-CLONE: at this pin external_dependencies/SimplerEnv has NO
+#     committed gitlink, so setup_SimplerEnv.sh's `git submodule update --init …/SimplerEnv`
+#     dies with `pathspec did not match`. setup_SimplerEnv.sh has an "already populated"
+#     fallback (checks SimplerEnv/setup.py|pyproject.toml) — so we clone allenzren/SimplerEnv
+#     --recursive (pulls inner ManiSkill2_real2sim) BEFORE running setup. (Gate-1 verified.)
+#   • FIX 1 (BROADENED for SIMPLER) + FIX 2 STILL APPLY: rollout_policy.py's top-level
+#     `import pandas` + the rldx/__init__.py eager model import chain (→ tyro, diffusers,
+#     transformers.masking_utils) need deps that setup_simpler.sh's narrow `uv pip install`
+#     list omits (it installs rldx --no-deps). Install rldx's OWN pyproject-pinned deps,
+#     PROTECTING the 2 sim-critical pins SimplerEnv needs (gymnasium 0.29.1, opencv 4.10.0.84)
+#     so uv's solver can't bump them. (Gate-1: tyro/pandas were the first two crashes.)
+#   • FIX 3 (LIBERO interactive prompt) does NOT apply — SimplerEnv setup has no input().
+#   • FIX 4 (SIMPLER-only) patches the rollout dispatcher — see below.
+#   • FIX 6/7 (SIMPLER-only) patch rldx_policy.py's obs+action adapter (LIBERO-only at this
+#     pin) — see the python patch heredoc after FIX 4.
+{% if sim_id != 'libero' and sim_clone_url -%}
+log "[5/8] FIX 5: pre-cloning {{ sim_clone_url }} --recursive (SimplerEnv gitlink absent at pin)..."
+SIM_EXT_REPO="${RLDX_DIR}/{{ sim_clone_subpath if sim_clone_subpath else 'external_dependencies/SimplerEnv' }}"
+if [ -f "${SIM_EXT_REPO}/setup.py" ] || [ -f "${SIM_EXT_REPO}/pyproject.toml" ]; then
+    log "  ${SIM_EXT_REPO} already populated — skip pre-clone"
+else
+    rm -rf "${SIM_EXT_REPO}"
+    git clone --recursive {{ sim_clone_url }} "${SIM_EXT_REPO}" \
+        2>&1 | tee /tmp/rldx_fix5_clone.log \
+        || die "FIX 5: {{ sim_clone_url }} clone failed (see /tmp/rldx_fix5_clone.log)"
+fi
+[ -f "${SIM_EXT_REPO}/setup.py" ] || [ -f "${SIM_EXT_REPO}/pyproject.toml" ] \
+    || die "FIX 5: ${SIM_EXT_REPO} not populated after clone"
+{% endif -%}
+log "[5/8] Running RLWRLD {{ sim_setup_script }} (builds {{ sim_id }} venv)..."
+cd "${RLDX_DIR}"
+# Same `set +e` + `trap - ERR` dance as the LIBERO branch: the setup script runs
+# `set -euo pipefail` and ends with a register/sanity self-test that can fail on a headless
+# host (e.g. GL/render or the same transformers-pin gap we fix next). DO NOT let that fire
+# the ERR trap → cfn_signal 1 → rollback. Capture exit; our own import check below is the gate.
+set +e
+trap - ERR
+bash {{ sim_setup_script }} 2>&1 | tee /tmp/rldx_setup_sim.log
+SETUP_EXIT=${PIPESTATUS[0]}
+set -e
+trap '_trap_handler' ERR
+log "  {{ sim_id }} setup exit=${SETUP_EXIT} (final sanity test may fail pre-fix — expected)"
+[ -x "${LIBERO_VENV}/bin/python" ] || die "{{ sim_id }} venv not created by setup (see /tmp/rldx_setup_sim.log)"
+
+# FIX 1 (BROADENED) — setup installs rldx --no-deps with a narrow list; the import chain needs
+# the full rldx pyproject dep set. Install it, PROTECTING the SimplerEnv-critical pins so uv
+# can't bump them. Skip heavy CUDA-build deps (flash-attn/deepspeed/torchcodec) — the
+# --use-sim-policy-wrapper ZeroMQ client never instantiates the model (server side only).
+log "[5/8] FIX 1 (broadened): installing rldx pyproject deps into {{ sim_id }} venv (protect sim pins)..."
+uv pip install --python "${LIBERO_VENV}/bin/python" \
+    tyro==0.9.17 pandas==2.2.3 einops==0.8.1 omegaconf==2.3.0 termcolor==3.2.0 \
+    dm-tree==0.1.8 lmdb==1.7.5 msgpack==1.1.0 msgpack-numpy==0.4.8 albumentations==1.4.18 \
+    matplotlib==3.10.1 scipy==1.15.3 datasets==3.6.0 wandb==0.23.0 moviepy==1.0.3 click==8.1.8 \
+    av==15.0.0 diffusers==0.35.1 peft==0.17.1 accelerate==1.13.0 \
+    safetensors huggingface-hub Pillow tqdm requests PyYAML packaging websockets pyzmq \
+    {{ sim_protect_pins if sim_protect_pins else 'gymnasium==0.29.1 numpy==1.26.4 opencv-python-headless==4.10.0.84' }} \
+    2>&1 | tee /tmp/rldx_fix1_modeldeps.log \
+    || die "FIX 1 (broadened deps) failed (see /tmp/rldx_fix1_modeldeps.log)"
+
+# FIX 2 — transformers too old. Model code does `from transformers.masking_utils import
+# create_causal_mask` (present 4.57.0, absent 4.51.3 that setup pins). Bump to 4.57.0.
+log "[5/8] FIX 2: bumping transformers → 4.57.0 in {{ sim_id }} venv..."
+uv pip install --python "${LIBERO_VENV}/bin/python" \
+    transformers==4.57.0 \
+    2>&1 | tee /tmp/rldx_fix2_transformers.log \
+    || die "FIX 2 (transformers bump) failed (see /tmp/rldx_fix2_transformers.log)"
+
+# FIX 4 ({{ sim_id }}-only) — rollout dispatch bug, proven @ {{ rldx_commit[:8] if rldx_commit else 'HEAD' }}.
+# get_embodiment_tag_from_env_name() (env_utils.py:82) maps BOTH simpler_env_google/* and
+# simpler_env_widowx/* to OXE_BRIDGE_ORIG, but get_gym_env's dispatch (rollout_policy.py:253)
+# only matches (OXE_GOOGLE, OXE_WIDOWX) → every SIMPLER env hits `raise ValueError(Invalid
+# environment name)`. In client mode (--policy_client_*) the embodiment_tag is unused by the
+# policy, so the fix is purely the dispatch tuple: add OXE_FRACTAL + OXE_BRIDGE_ORIG. This
+# patches the runtime clone ONLY (vendoring-0 invariant: the upstream commit is untouched).
+# This bug is unpatched on origin/main (== our pin) → anyone reproducing SIMPLER hits it.
+log "[5/8] FIX 4: patching rollout_policy.py SIMPLER dispatch (add OXE_FRACTAL/OXE_BRIDGE_ORIG)..."
+ROLLOUT_PY="${RLDX_DIR}/rldx/eval/rollout_policy.py"
+grep -qF 'EmbodimentTag.OXE_GOOGLE, EmbodimentTag.OXE_WIDOWX)' "${ROLLOUT_PY}" \
+    || die "FIX 4: expected SIMPLER dispatch line not found in rollout_policy.py — commit drifted?"
+sed -i 's/elif env_embodiment in (EmbodimentTag.OXE_GOOGLE, EmbodimentTag.OXE_WIDOWX):/elif env_embodiment in (EmbodimentTag.OXE_GOOGLE, EmbodimentTag.OXE_WIDOWX, EmbodimentTag.OXE_FRACTAL, EmbodimentTag.OXE_BRIDGE_ORIG):/' "${ROLLOUT_PY}"
+grep -qF 'EmbodimentTag.OXE_FRACTAL, EmbodimentTag.OXE_BRIDGE_ORIG)' "${ROLLOUT_PY}" \
+    || die "FIX 4: sed did not apply the SIMPLER dispatch patch (see ${ROLLOUT_PY}:253)"
+log "  FIX 4 applied — SIMPLER envs now route to get_simpler_env_fn"
+
+# FIX 6/7 ({{ sim_id }}-only) — RLDXSimPolicyWrapper.check_observation/_get_action are LIBERO-only
+# at this pin. SIMPLER envs emit decomposed state.x/y/z + quaternion rx/ry/rz/rw + gripper and
+# expect decomposed action.x/y/z/roll/pitch/yaw/gripper back, but the {{ embodiment_tag }} model
+# wants state+action keys end_effector_position / end_effector_rotation / gripper_{position,close}.
+# Worse, is_libero = ("state.x" in obs or "video.image" in obs) misfires True for SIMPLER (has
+# both) → fractal actions wrongly routed through the eef_pos_delta branch → empty action →
+# server check_action fails. Patch rldx/policy/rldx_policy.py to add the SIMPLER obs adapter
+# (FIX 6) + action adapter (FIX 7). Dims verified EXACT vs ckpt statistics.json (eef_pos=3,
+# eef_rot quat=4 obs / euler=3 action, gripper=1). Gate-1: 100% SR over 10 eps after this.
+# Runtime clone ONLY (vendoring-0 invariant). Patch is a python script (multi-line, indentation-
+# sensitive → not sed). Idempotent via markers; verifies the file still compiles.
+log "[5/8] FIX 6/7: patching rldx_policy.py SIMPLER obs+action adapter..."
+RLDX_POLICY_PY="${RLDX_DIR}/rldx/policy/rldx_policy.py"
+"${RLDX_DIR}/.venv/bin/python" - "${RLDX_POLICY_PY}" <<'RLDX_FIX67_EOF' 2>&1 | tee /tmp/rldx_fix67.log
+import sys, py_compile
+P = sys.argv[1]
+src = open(P).read()
+
+OBS_MARKER = "# ===== SIMPLER KEY MAPPING (FIX 6) ====="
+ACT_MARKER = "# ===== SIMPLER ACTION MAPPING (FIX 7) ====="
+
+# FIX 6 — observation adapter. Insert right before the "# ===== VIDEO VALIDATION =====" comment
+# inside check_observation (i.e. immediately after the LIBERO mapping block).
+if OBS_MARKER not in src:
+    obs_anchor = "        # ===== VIDEO VALIDATION ====="
+    if obs_anchor not in src:
+        print("FIX 6 FAIL: VIDEO VALIDATION anchor not found — commit drift?"); sys.exit(1)
+    obs_block = '''        ''' + OBS_MARKER + '''
+        # SIMPLER emits a quaternion (state.rw present); LIBERO does not. Synthesise the model's
+        # fractal/bridge state keys. Dims verified vs statistics.json: eef_pos=3, eef_rot=4(xyzw),
+        # gripper=1. Applied post-batching → arrays are already (B,T,D).
+        if "state.rw" in observation:
+            if all(k in observation for k in ("state.x", "state.y", "state.z")):
+                observation["state.end_effector_position"] = np.concatenate(
+                    [observation["state.x"], observation["state.y"], observation["state.z"]], axis=-1
+                )
+            if all(k in observation for k in ("state.rx", "state.ry", "state.rz", "state.rw")):
+                observation["state.end_effector_rotation"] = np.concatenate(
+                    [observation["state.rx"], observation["state.ry"],
+                     observation["state.rz"], observation["state.rw"]], axis=-1
+                )
+            if "state.gripper" in observation:
+                observation["state.gripper_position"] = observation["state.gripper"]
+
+'''
+    src = src.replace(obs_anchor, obs_block + obs_anchor, 1)
+    print("FIX 6 applied")
+else:
+    print("FIX 6 already present")
+
+# FIX 7 — action adapter. Insert right after the is_libero computation inside the sim-wrapper
+# _get_action. SIMPLER (state.rw present) must NOT take the LIBERO branch and must emit BOTH the
+# fractal action keys (server check_action) and the decomposed keys (client env.step()).
+if ACT_MARKER not in src:
+    act_anchor = '        is_libero = "state.x" in observation or "video.image" in observation\n'
+    if act_anchor not in src:
+        print("FIX 7 FAIL: is_libero anchor not found — commit drift?"); sys.exit(1)
+    act_block = act_anchor + '''
+        ''' + ACT_MARKER + '''
+        # Gate-1 verified the model returns keys: end_effector_position / end_effector_rotation /
+        # gripper_close. Emit the fractal keys (server validates) AND decomposed keys (env reads).
+        is_simpler = "state.rw" in observation
+        if is_simpler:
+            is_libero = False
+            flat_actions = {f"action.{k}": action[k] for k in action}
+            if "end_effector_position" in action:
+                eep = action["end_effector_position"]
+                flat_actions["action.x"] = eep[..., 0:1]
+                flat_actions["action.y"] = eep[..., 1:2]
+                flat_actions["action.z"] = eep[..., 2:3]
+            if "end_effector_rotation" in action:
+                eer = action["end_effector_rotation"]
+                flat_actions["action.roll"] = eer[..., 0:1]
+                flat_actions["action.pitch"] = eer[..., 1:2]
+                flat_actions["action.yaw"] = eer[..., 2:3]
+            if "gripper_close" in action:
+                # simpler_env.step() runs _postprocess_gripper(action.gripper) itself.
+                flat_actions["action.gripper"] = action["gripper_close"]
+            return flat_actions, info
+'''
+    src = src.replace(act_anchor, act_block, 1)
+    print("FIX 7 applied")
+else:
+    print("FIX 7 already present")
+
+open(P, "w").write(src)
+try:
+    py_compile.compile(P, doraise=True)
+    print("FIX 6/7 OK — rldx_policy.py compiles")
+except py_compile.PyCompileError as e:
+    print("FIX 6/7 FAIL: rldx_policy.py no longer compiles:", e); sys.exit(1)
+RLDX_FIX67_EOF
+grep -qF 'SIMPLER ACTION MAPPING (FIX 7)' "${RLDX_POLICY_PY}" \
+    || die "FIX 6/7: patch did not apply to rldx_policy.py (see /tmp/rldx_fix67.log)"
+# Clear stale bytecode so the edited source is the one imported by the sim venv.
+find "${RLDX_DIR}/rldx/policy" -name '*.pyc' -delete 2>/dev/null || true
+rm -rf "${RLDX_DIR}/rldx/policy/__pycache__" 2>/dev/null || true
+log "  FIX 6/7 applied — SIMPLER obs+action adapter installed"
+
+# Verify the {{ sim_id }} venv: rollout-worker imports + register + gym.make(target).
+# SIMPLER renders via MuJoCo → set EGL here (the [7/8] rollout exports it too).
+log "[5/8] Verifying {{ sim_id }} venv (rollout imports + gym.make target)..."
+FIRST_ENV='{{ tasks[0].env_name if tasks and tasks[0].env_name else "simpler_env_google/google_robot_pick_coke_can" }}'
+(
+    cd "${RLDX_DIR}"
+    export MUJOCO_GL=egl
+    export PYOPENGL_PLATFORM=egl
+    RLDX_VERIFY_ENV="${FIRST_ENV}" "${LIBERO_VENV}/bin/python" -c "
+import os
+from {{ sim_register_module }} import {{ sim_register_fn }}
+{{ sim_register_fn }}()
+import gymnasium as gym
+env = gym.make(os.environ['RLDX_VERIFY_ENV'])
+env.reset(); env.close()
+print('ROLLOUT_IMPORTS_OK + gym.make OK:', os.environ['RLDX_VERIFY_ENV'])
+"
+) 2>&1 | tee /tmp/rldx_sim_import_check.log \
+    || die "{{ sim_id }} venv import/gym.make check failed (see /tmp/rldx_sim_import_check.log)"
+{%- endif %}
 
 # ── [6/8] HF checkpoint + VLM backbone pre-download ────────────────
 mkdir -p "${RLDX_CKPT_DIR}"
@@ -376,7 +648,9 @@ CUDA_VISIBLE_DEVICES=0 nohup uv run --active python rldx/eval/run_rldx_server.py
     --model-path "${RLDX_CKPT_DIR}" \
     --embodiment-tag {{ embodiment_tag if embodiment_tag else 'GENERAL_EMBODIMENT' }} \
     --use-sim-policy-wrapper \
-    --no-strict \
+{%- for arg in server_extra_args %}
+    {{ arg }} \
+{%- endfor %}
     --host 127.0.0.1 \
     --port "${PORT}" \
     "${COMPILE_ARGS[@]}" \
@@ -384,8 +658,8 @@ CUDA_VISIBLE_DEVICES=0 nohup uv run --active python rldx/eval/run_rldx_server.py
 SERVER_PID=$!
 log "  Policy server started (PID ${SERVER_PID}) — waiting for port ${PORT}..."
 
-# Wait up to 15min for the server. 7B model load + Qwen3-VL backbone init is slow first time.
-SERVER_TIMEOUT=900
+# Wait up to {{ server_warmup_timeout // 60 }}min for the server. 7B model load + Qwen3-VL backbone init is slow first time.
+SERVER_TIMEOUT={{ server_warmup_timeout }}
 SERVER_WAIT=0
 SERVER_OK=false
 while [ ${SERVER_WAIT} -lt ${SERVER_TIMEOUT} ]; do
@@ -433,16 +707,21 @@ for TASK_IDX in $(seq 0 $((TASK_COUNT - 1))); do
     log "[7/8] Task $((TASK_IDX+1))/${TASK_COUNT}: suite=${SUITE}, env_name=${ENV_NAME}, num_episodes=${NUM_EPISODES}"
     touch /tmp/rldx_task${TASK_IDX}_start.marker
 
-    # Run LIBERO rollout from the libero_uv venv (torch 2.5.1 ABI). The client connects to the
-    # ZeroMQ policy server on 127.0.0.1:${PORT}. Args mirror RLWRLD's eval_libero.sh exactly.
-    # Disable BOTH errexit AND the ERR trap (see setup_libero.sh note): a non-zero eval must
-    # not auto-fire cfn_signal here — we capture EVAL_EXIT and fail explicitly via die() below,
-    # AFTER uploading diagnostics. Letting the ERR trap fire would skip the S3 diag upload.
+    # Run the {{ sim_id }} rollout from the sim venv (sim-specific torch ABI). The client connects
+    # to the ZeroMQ policy server on 127.0.0.1:${PORT}. Args mirror RLWRLD's eval_{{ sim_id }}.sh.
+    # Disable BOTH errexit AND the ERR trap (see setup note): a non-zero eval must not auto-fire
+    # cfn_signal here — we capture EVAL_EXIT and fail explicitly via die() below, AFTER uploading
+    # diagnostics. Letting the ERR trap fire would skip the S3 diag upload.
     set +e
     trap - ERR
     (
         cd "${RLDX_DIR}"
+{%- if sim_id == 'libero' %}
         export LIBERO_CONFIG_PATH=/root/.libero
+{%- else %}
+        export MUJOCO_GL=egl
+        export PYOPENGL_PLATFORM=egl
+{%- endif %}
         "${LIBERO_VENV}/bin/python" rldx/eval/rollout_policy.py \
             --n_episodes "${NUM_EPISODES}" \
             --policy_client_host 127.0.0.1 \
@@ -512,7 +791,7 @@ for TASK_IDX in $(seq 0 $((TASK_COUNT - 1))); do
             echo "--- Environment ---"
             printf "Suite:      %s\n"  "${SUITE}"
             printf "Env:        %s\n"  "${ENV_NAME}"
-            printf "Robot:      Franka Panda 7-DOF (LIBERO)\n"
+            printf "Robot:      {{ robot_label if robot_label else 'Franka Panda 7-DOF (LIBERO)' }}\n"
             echo ""
             echo "--- Model ---"
             printf "Checkpoint: %s (rev %s)\n" "{{ hf_repo }}" "{{ hf_model_revision[:8] if hf_model_revision else 'unpinned' }}"
@@ -584,7 +863,7 @@ ${SUMMARY_ALL}
 Model: RLDX-1 (RLWRLD — MSAT on Qwen3-VL-8B, eager inference)
 Checkpoint: {{ hf_repo }} (rev {{ hf_model_revision[:8] if hf_model_revision else 'unpinned' }})
 License: RLWRLD Model License v1.0 (NON-COMMERCIAL — simulation benchmarking)
-Simulation: LIBERO (robosuite + MuJoCo, headless EGL)
+Simulation: {{ sim_label if sim_label else 'LIBERO (robosuite + MuJoCo, headless EGL)' }}
 Instance: ${INSTANCE_TYPE}
 
 Download results:
