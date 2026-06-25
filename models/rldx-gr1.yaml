@@ -1,0 +1,158 @@
+# RLDX-1 (RLWRLD) × RoboCasa GR-1 Tabletop configuration
+# Paper: "RLDX-1: A Dexterity-First Vision-Language-Action Foundation Model"
+#        arXiv:2605.03269 (RLWRLD, 2026)
+# Repo:  https://github.com/RLWRLD/RLDX-1 (code: Apache-2.0)
+# Goal:  GR-1 humanoid (bimanual + waist) Tabletop 1-click eval — a NEW capability no existing
+#        vla-simulator target covers. gr00t-gr1 evaluates a *different model* (NVIDIA GR00T N1.6)
+#        on RoboCasa; this target evaluates RLWRLD's own RLDX-1-FT-GR1 on the 24-task RoboCasa
+#        GR-1 Tabletop benchmark (GR1ArmsAndWaistFourierHands embodiment) — bimanual + waist DOF,
+#        distinct from all LIBERO/SimplerEnv single-arm clips.
+#
+# CLI:   python deploy.py --vla rldx-gr1 [--email YOUR@EMAIL.COM]
+#
+# Architecture: Multi-Stream Action Transformer (MSAT) on a Qwen3-VL-8B backbone (same model
+#   family as the `rldx` LIBERO + `rldx-simpler` targets). GR-1 differs only in the sim client
+#   venv + the rollout args (16-step action horizon, 720 max steps).
+# Eval pattern: RLWRLD's own server + client split (their run_scripts/eval/gr1_tabletop/):
+#   - main .venv (py3.10, torch 2.7.0+cu126): rldx/eval/run_rldx_server.py — ZeroMQ policy server
+#   - robocasa_uv venv (py3.10, torch 2.5.1): rldx/eval/rollout_policy.py — RoboCasa/MuJoCo client
+#   Structurally identical to the `rldx` LIBERO target; SHARED template, branched by sim_id.
+#
+# GR-1 is the CLEANEST sim of the six (source-verified @ ecbfaf80, no GPU):
+#   • dispatch is correct — get_gym_env routes `gr1_unified/*` via env_name.startswith (rollout_
+#     policy.py:237). No FIX-4 analog (SIMPLER's dispatch bug does NOT apply).
+#   • obs/action contract is correct — the wrapper's is_libero heuristic ("state.x" or
+#     "video.image" in obs) is False for GR-1 (it emits state.left_arm/right_arm/waist +
+#     video.ego_view_*), so actions flow through the generic else-branch unchanged. No FIX-6/7.
+#   • MuJoCo/EGL renderer (robosuite), NOT SAPIEN → no Vulkan loader. No FIX-8 (needs_vulkan).
+#   • the submodule is committed AS FILES (249 files, not a gitlink) → `git submodule update`
+#     is a no-op (EXIT 0). No FIX-5 pre-clone (unlike SIMPLER, whose gitlink is absent).
+#   The only shared fixes that DO apply: FIX 1 (broadened deps — setup installs rldx --no-deps,
+#   so the import chain's tyro/diffusers/etc. are missing) and FIX 2 (transformers 4.51.3 →
+#   4.57.0, same masking_utils gap as LIBERO/SIMPLER).
+#
+# LICENSE — NON-COMMERCIAL. Weights are under the RLWRLD Model License v1.0:
+#   intended use explicitly includes "simulation benchmarking" (this PoC qualifies).
+#   out-of-scope: commercial deployment. Keep outputs to AWS-internal enablement only.
+#   Weights are downloaded from HF at runtime (NOT vendored) → no non-commercial weight is
+#   committed. RoboCasa GR-1 Tabletop tasks (robocasa/robocasa-gr1-tabletop-tasks) are cloned
+#   at runtime (MIT). See NOTICE + README Acknowledgments for the full attribution chain.
+
+model:
+  id: rldx-gr1
+  version: "FT-GR1"
+
+  # SAME pin as the rldx LIBERO + rldx-simpler targets; independent per-yaml pin so a re-pin of
+  # one target can't silently move GR-1 (session risk #10). origin/main HEAD == this commit.
+  rldx_commit: "ecbfaf80cd031dcc892186ed30465de3591047e6"
+
+  # HF checkpoint (GR-1 Tabletop fine-tuned). eval_gr1.sh defaults MODEL_PATH to
+  # RLWRLD/RLDX-1-FT-GR1 (verified: run_scripts/eval/gr1_tabletop/eval_gr1.sh:12 +
+  # README.md:9). Revision pinned at Gate 1 (smoke) — left unpinned here so the first
+  # smoke pulls HEAD, then we lock the validated SHA (same flow as rldx-simpler).
+  hf_repo: "RLWRLD/RLDX-1-FT-GR1"
+  # Pinned to the repo's frozen main HEAD (HF API: lastModified 2026-05-06, gated=False, 13
+  # siblings). The repo has not moved since the FT-GR1 release, so pinning up-front == locking
+  # the validated SHA; makes the Gate-3 deploy bit-for-bit reproducible (cc-77060, 2026-06-25).
+  hf_model_revision: "d0277c5c5f94c49bf915ebcddc9420a8de094a56"
+  # VLM backbone pulled by the checkpoint config at server load — pre-download in userdata so
+  # the first server load does not race the warmup timeout fetching ~16GB on a fresh instance.
+  backbone_hf_repo: "Qwen/Qwen3-VL-8B-Instruct"
+
+  # ── RoboCasa GR-1 Tabletop sim parameterisation (consumed by generate_rldx → shared template) ──
+  sim_id: gr1
+  # setup_gr1.sh is the ENTRY script (not the inner setup_RoboCasaGR1TabletopTasks.sh) — it calls
+  # the inner script AND then disables the sim venv's flash-attn (torch-ABI mismatch guard) AND
+  # applies the determinism patch under run_scripts/eval/gr1_tabletop/patches/. Calling the inner
+  # script alone would skip both. (Verified: setup_gr1.sh:7-31.)
+  sim_setup_script: "run_scripts/eval/gr1_tabletop/setup_gr1.sh"
+  sim_venv_subpath: "rldx/eval/sim/robocasa-gr1-tabletop-tasks/robocasa_uv/.venv"
+  # FIX 5 does NOT apply — external_dependencies/robocasa-gr1-tabletop-tasks is committed as 249
+  # regular files (not a gitlink), so setup's `git submodule update --init` is a no-op (EXIT 0,
+  # verified). Leaving sim_clone_url empty makes the template skip the SIMPLER-only pre-clone.
+  sim_clone_url: ""
+  sim_clone_subpath: ""
+  # FIX 1 (broadened) — protect the pins GR-1's renderer needs from the broad rldx-dep install.
+  # Passed UNQUOTED into uv pip install (word-split). robosuite 1.5.1 + mujoco 3.2.6 = the GR-1
+  # sim engine; gymnasium 0.29.1 = sim vector-env layer; numpy 1.26.4 = robocasa/cluster pin.
+  # (Verified: setup_RoboCasaGR1TabletopTasks.sh:28,41,47 + robocasa setup.py.)
+  sim_protect_pins: "gymnasium==0.29.1 numpy==1.26.4 robosuite==1.5.1 mujoco==3.2.6"
+  # Env registration — GR-1 registers at IMPORT TIME via a module-level loop
+  # (gymnasium_groot.py:171 `for ENV in REGISTERED_ENVS:`), NOT a callable register_*() function
+  # like SIMPLER. sim_register_fn EMPTY → the template's verify block imports the module to
+  # trigger registration (instead of `from M import fn; fn()`).
+  sim_register_module: "robocasa.utils.gym_utils.gymnasium_groot"
+  sim_register_fn: ""
+  # FIX 4 (dispatch) does NOT apply — `gr1_unified/*` routes correctly through get_gym_env's
+  # startswith branch (rollout_policy.py:237). SIMPLER-only.
+  sim_needs_dispatch_fix: false
+  # FIX 6/7 (obs/action adapter) does NOT apply — is_libero is False for GR-1 and the generic
+  # action passthrough is correct (rldx_policy.py:523,540). SIMPLER-only.
+  sim_needs_policy_fix: false
+  # FIX 8 (Vulkan) does NOT apply — GR-1 renders via MuJoCo/EGL (MUJOCO_GL=egl), not SAPIEN.
+  # (Verified: setup_RoboCasaGR1TabletopTasks.sh:78-79, no sapien import anywhere in GR-1 path.)
+  needs_vulkan: false
+
+  # run_rldx_server.py arguments. SAME server as LIBERO/SIMPLER. eval_gr1.sh passes NO --no-strict
+  # and NO --num-inference-timesteps (verified: eval_gr1.sh:54-58) → server_extra_args EMPTY,
+  # STRICT validation on. embodiment_tag = GENERAL_EMBODIMENT (eval_gr1.sh:56 + env_utils.py:75-76;
+  # the README "GR1" label is cosmetic — the actual server flag is GENERAL_EMBODIMENT).
+  embodiment_tag: "GENERAL_EMBODIMENT"
+  server_extra_args: []
+  compile: ""                     # eager (same rationale as rldx.yaml — no sm_120 dependency)
+
+  # rollout_policy.py arguments (verified from run_scripts/eval/gr1_tabletop/eval_gr1.sh:68-75):
+  # --max_episode_steps 720, --n_action_steps 16, --n_envs 1, --n_episodes (default 50; PoC trims).
+  max_episode_steps: 720
+  n_action_steps: 16
+  # n_envs: eval_gr1.sh uses 1 (sequential). Single server. (Verified: eval_gr1.sh:74.)
+  n_envs: 1
+
+  # Result-card labels (cosmetic; shown in S3 per-video context txt + SNS summary).
+  robot_label: "GR-1 humanoid (bimanual 2×7-DOF arms + Fourier hands + waist; GR1ArmsAndWaistFourierHands)"
+  sim_label: "RoboCasa GR-1 Tabletop (robosuite 1.5.1 + MuJoCo 3.2.6, headless EGL)"
+
+  # Server warmup watchdog (seconds). Same MSAT/Qwen3-VL-8B 7B+ checkpoint as rldx-simpler.
+  # Gate-3 (2026-06-25) MEASURED a FAST cold load here — server ready at ~210s (shards at
+  # ~12s/it, no fp32-upcast stall, NOT the ~17min SIMPLER saw). 2400s (40min) keeps wide margin
+  # vs that and stays well under creationpolicy_timeout. Kept at 2400 (no need to tighten; the
+  # extra headroom is free since warmup ends as soon as the port opens).
+  server_warmup_timeout: 2400
+
+instance:
+  # VALIDATED 2026-06-25 (Gate 3, full deploy.py 1-shot E2E, us-east-1): ran cleanly on
+  # g5.2xlarge (A10G 24GB) — AzSelector's pick when g6.2xlarge had no us-east-1 capacity.
+  # Policy server is the same ~17GB MSAT/Qwen3-VL-8B as LIBERO/SIMPLER (SIMPLER measured 16,986
+  # MiB); MuJoCo render is LIGHTER than SIMPLER's SAPIEN (no Vulkan device alloc) → the full run
+  # fit comfortably on 24GB. Server cold-load was FAST here (~210s, shards at ~12s/it, no fp32-
+  # upcast stall) — the 2400s warmup watchdog had wide margin. Lead with .2xlarge for system RAM
+  # (robosuite + tabletop asset DL), single-GPU xlarge as fallback. g6/g5 = L4/A10G 24GB.
+  preferred: [g6.2xlarge, g5.2xlarge, g6.xlarge, g5.xlarge]
+  ebs_gb: 200          # repo + robocasa_uv venv + RoboCasa tabletop assets + FT-GR1 ckpt + Qwen backbone + videos
+  ebs_gb_bridge: 200   # bridge not supported — same value
+  # Conservative initial smoke. setup_gr1.sh builds a 3rd venv + downloads tabletop assets +
+  # applies patches; server warmup ~17min. Tighten after Gate 1 measures real wall-clock.
+  creationpolicy_timeout: PT180M
+
+# Evaluation tasks — flat list (LAP/rldx style). env_name uses the `gr1_unified/<task>` namespace
+# registered by the module-level loop in gymnasium_groot.py (only the GR1ArmsAndWaistFourierHands
+# robot alias gets the gr1_unified/ id — verified: gymnasium_groot.py:163-168). Image 256×256 RGB,
+# ego-centric (FINAL_IMAGE_RESOLUTION). The 24 tasks split into 6 core PnP-...-Close + 18
+# Posttrain novel-object splits; eval_gr1.sh lists all 24 (eval_gr1.sh:18-43).
+# PoC: 2 visually-distinct ARTICULATED-object tasks (drawer + microwave) for the first showcase
+# pass, small n. Reported 24-task average SR = 58.7% (README.md:10) → partial success likely on
+# any single hard task; the README MUST report the actual measured rate, not assume the average.
+tasks:
+  - suite: gr1_tabletop
+    env_name: "gr1_unified/PnPCupToDrawerClose_GR1ArmsAndWaistFourierHands_Env"
+    num_episodes: 5
+    description: "GR-1 Tabletop — pick cup, place in drawer, close drawer (bimanual humanoid + waist, articulated drawer; distinct from all single-arm LIBERO/SimplerEnv clips)"
+  - suite: gr1_tabletop
+    env_name: "gr1_unified/PnPMilkToMicrowaveClose_GR1ArmsAndWaistFourierHands_Env"
+    num_episodes: 5
+    description: "GR-1 Tabletop — pick milk, place in microwave, close door (bimanual humanoid + waist, articulated microwave)"
+
+# Bridge mode (vla-hub serving) NOT supported — same rationale as the rldx LIBERO/SIMPLER targets
+# (fused-kernel/ZeroMQ serving conflicts with vla-hub guardrails). See accounts/startups/rlwrld/README.md §4.
+bridge:
+  enabled: false

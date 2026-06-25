@@ -15,6 +15,7 @@ generate.py — model yaml + simulator-config.yaml 읽어 assets/userdata/{vla}.
     python generate.py --vla lap         [--config simulator-config.yaml] [--dry-run]
     python generate.py --vla rldx        [--config simulator-config.yaml] [--dry-run]
     python generate.py --vla rldx-simpler [--config simulator-config.yaml] [--dry-run]
+    python generate.py --vla rldx-gr1    [--config simulator-config.yaml] [--dry-run]
     python generate.py --vla openarm-isaac [--config simulator-config.yaml] [--dry-run]
     python generate.py --vla openarm-lift-act [--config simulator-config.yaml] [--dry-run]
 """
@@ -291,7 +292,23 @@ def generate_rldx(config: dict, dry_run: bool, vla: str = "rldx") -> str:
         "sim_venv_subpath": model.get("sim_venv_subpath", ""),
         "sim_setup_script": model.get("sim_setup_script", ""),
         "sim_register_module": model.get("sim_register_module", ""),
+        # Empty sim_register_fn → the sim registers at IMPORT time (a module-level loop, e.g.
+        # GR-1's gymnasium_groot.py:171), so the verify block just imports the module. A
+        # non-empty value → the sim exposes a callable register_*() (e.g. SIMPLER's
+        # register_simpler_envs) the verify block must call. Defaults to "" for forward sims.
         "sim_register_fn": model.get("sim_register_fn", ""),
+        # FIX 4 (dispatch sed) + FIX 6/7 (obs/action policy patch) are SIMPLER-ONLY: they repair
+        # bugs that exist only on the SIMPLER eval path at this pin. Default them to whether the
+        # sim IS SIMPLER so rldx-simpler.yaml (which predates these flags) renders byte-identical
+        # without having to set them; every other sim (LIBERO, GR-1, ...) leaves them False.
+        # GR-1 source-verified clean: dispatch routes gr1_unified via startswith (rollout_policy
+        # .py:237) and is_libero is correctly False (rldx_policy.py:523) → neither fix applies.
+        "sim_needs_dispatch_fix": bool(
+            model.get("sim_needs_dispatch_fix", model.get("sim_id", "libero") == "simpler")
+        ),
+        "sim_needs_policy_fix": bool(
+            model.get("sim_needs_policy_fix", model.get("sim_id", "libero") == "simpler")
+        ),
         # FIX 5 — non-LIBERO sims whose external_dependencies/<sim> gitlink is absent at the pin
         # (SimplerEnv) must be pre-cloned --recursive so the setup script's already-populated
         # fallback runs. Empty for LIBERO (vendored dir present) → template skips the pre-clone.
@@ -478,7 +495,7 @@ def generate_pi(config: dict, resolved_vpc: str, resolved_nlb: str, dry_run: boo
 
 def main():
     parser = argparse.ArgumentParser(description="vla-simulator UserData 스크립트 생성")
-    parser.add_argument("--vla", required=True, choices=["gr00t", "gr00t-gr1", "gr00t-g1", "pi", "openvla-oft", "lap", "rldx", "rldx-simpler", "openarm-isaac", "openarm-lift-act"], help="VLA 모델")
+    parser.add_argument("--vla", required=True, choices=["gr00t", "gr00t-gr1", "gr00t-g1", "pi", "openvla-oft", "lap", "rldx", "rldx-simpler", "rldx-gr1", "openarm-isaac", "openarm-lift-act"], help="VLA 모델")
     parser.add_argument(
         "--config", default=str(BASE_DIR / "simulator-config.yaml"),
         help="공통 설정 파일 경로 (기본: simulator-config.yaml)",
@@ -520,7 +537,7 @@ def main():
         rendered = generate_openvla_oft(config, args.libero_suite, args.dry_run)
     elif args.vla == "lap":
         rendered = generate_lap(config, args.resolved_nlb, args.dry_run)
-    elif args.vla in ("rldx", "rldx-simpler"):
+    elif args.vla in ("rldx", "rldx-simpler", "rldx-gr1"):
         rendered = generate_rldx(config, args.dry_run, vla=args.vla)
     elif args.vla == "openarm-isaac":
         rendered = generate_openarm_isaac(config, args.dry_run)

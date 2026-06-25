@@ -13,13 +13,15 @@ in this repository). Each is governed by its own license:
 - LAP-3B — MIT (code). github.com/lihzha/lap
 - LIBERO — MIT. github.com/Lifelong-Robot-Learning/LIBERO
 - SimplerEnv + ManiSkill2_real2sim — MIT. github.com/allenzren/SimplerEnv
+- RoboCasa GR-1 Tabletop tasks — MIT. github.com/robocasa/robocasa-gr1-tabletop-tasks
 
 - RLDX-1 (RLWRLD) — github.com/RLWRLD/RLDX-1
     * Code: Apache-2.0, Copyright (c) RLWRLD.
     * Model weights (RLWRLD/RLDX-1-FT-*): RLWRLD Model License v1.0 — NON-COMMERCIAL.
       "simulation benchmarking" is an explicit intended use; commercial deployment
       is out of scope. Used here for AWS-internal enablement / benchmarking only.
-    * The rldx / rldx-simpler targets clone the RLDX-1 repo at a pinned commit at
-      runtime and apply small in-place fixes to that clone only (dependency pins and a
-      SimplerEnv dispatch patch). The upstream repository is not modified, and no model
-      weights are committed to this repository (they download from Hugging Face at runtime).
+    * The rldx / rldx-simpler / rldx-gr1 targets clone the RLDX-1 repo at a pinned commit
+      at runtime and apply small in-place fixes to that clone only (dependency pins; plus,
+      for rldx-simpler only, a SimplerEnv dispatch + obs/action adapter patch). rldx-gr1
+      needs no code patch. The upstream repository is not modified, and no model weights
+      are committed to this repository (they download from Hugging Face at runtime).

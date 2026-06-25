@@ -377,6 +377,7 @@ print('ROLLOUT_IMPORTS_OK + gym.make OK:', os.environ['RLDX_VERIFY_ENV'])
 ) 2>&1 | tee /tmp/rldx_libero_import_check.log \
     || die "libero_uv venv import/gym.make check failed (see /tmp/rldx_libero_import_check.log)"
 {% else %}
+{% if sim_id == 'simpler' -%}
 # ── [5/8] {{ sim_id }} sim venv (RLWRLD {{ sim_setup_script }} + FIX 1/2 + FIX 4/5/6/7) ──
 # Mirrors the LIBERO branch (same server+client topology), with the sim-specific deltas
 # VALIDATED on a g6.2xlarge L4 Gate-1 smoke @ {{ rldx_commit[:8] if rldx_commit else 'HEAD' }}
@@ -397,6 +398,28 @@ print('ROLLOUT_IMPORTS_OK + gym.make OK:', os.environ['RLDX_VERIFY_ENV'])
 #   • FIX 4 (SIMPLER-only) patches the rollout dispatcher — see below.
 #   • FIX 6/7 (SIMPLER-only) patch rldx_policy.py's obs+action adapter (LIBERO-only at this
 #     pin) — see the python patch heredoc after FIX 4.
+{% else -%}
+# ── [5/8] {{ sim_id }} sim venv (RLWRLD {{ sim_setup_script }} + FIX 1/2{% if sim_needs_dispatch_fix %} + FIX 4{% endif %}{% if sim_needs_policy_fix %} + FIX 6/7{% endif %}) ──
+# Mirrors the LIBERO branch (same server+client topology), with the sim-specific deltas below.
+# Source-verified @ {{ rldx_commit[:8] if rldx_commit else 'HEAD' }} (no GPU); the VRAM/throughput
+# envelope is measured at this sim's own Gate 1 (NOT inherited from another sim — see README).
+#   • setup script = {{ sim_setup_script }} (builds {{ sim_venv_subpath }}).
+#   • FIX 1 (broadened) + FIX 2 apply: setup installs rldx --no-deps + pins transformers 4.51.3,
+#     but the rldx import chain needs the full pyproject dep set (tyro/diffusers/…) and
+#     transformers.masking_utils (4.57.0). Install them, PROTECTING this sim's renderer pins
+#     ({{ sim_protect_pins }}) so uv can't bump them.
+#   • FIX 3 (LIBERO interactive prompt) does NOT apply — this setup has no input().
+{% if not sim_clone_url %}#   • FIX 5 (pre-clone) does NOT apply — the sim's external_dependencies dir is committed as
+#     files (not an absent gitlink), so setup's `git submodule update` is a no-op.
+{% endif -%}
+{% if not needs_vulkan %}#   • FIX 8 (Vulkan loader) does NOT apply — this sim renders via MuJoCo/EGL, not SAPIEN.
+{% endif -%}
+{% if not sim_needs_dispatch_fix %}#   • FIX 4 (dispatch) does NOT apply — this env namespace routes correctly through get_gym_env.
+{% endif -%}
+{% if not sim_needs_policy_fix %}#   • FIX 6/7 (obs/action adapter) does NOT apply — the wrapper's is_libero branch is correctly
+#     False for this sim and the generic action passthrough is correct.
+{% endif -%}
+{% endif -%}
 {% if sim_id != 'libero' and sim_clone_url -%}
 log "[5/8] FIX 5: pre-cloning {{ sim_clone_url }} --recursive (SimplerEnv gitlink absent at pin)..."
 SIM_EXT_REPO="${RLDX_DIR}/{{ sim_clone_subpath if sim_clone_subpath else 'external_dependencies/SimplerEnv' }}"
@@ -427,7 +450,7 @@ log "  {{ sim_id }} setup exit=${SETUP_EXIT} (final sanity test may fail pre-fix
 [ -x "${LIBERO_VENV}/bin/python" ] || die "{{ sim_id }} venv not created by setup (see /tmp/rldx_setup_sim.log)"
 
 # FIX 1 (BROADENED) — setup installs rldx --no-deps with a narrow list; the import chain needs
-# the full rldx pyproject dep set. Install it, PROTECTING the SimplerEnv-critical pins so uv
+# the full rldx pyproject dep set. Install it, PROTECTING the {{ 'SimplerEnv' if sim_id == 'simpler' else sim_id }}-critical pins so uv
 # can't bump them. Skip heavy CUDA-build deps (flash-attn/deepspeed/torchcodec) — the
 # --use-sim-policy-wrapper ZeroMQ client never instantiates the model (server side only).
 log "[5/8] FIX 1 (broadened): installing rldx pyproject deps into {{ sim_id }} venv (protect sim pins)..."
@@ -449,6 +472,7 @@ uv pip install --python "${LIBERO_VENV}/bin/python" \
     2>&1 | tee /tmp/rldx_fix2_transformers.log \
     || die "FIX 2 (transformers bump) failed (see /tmp/rldx_fix2_transformers.log)"
 
+{% if sim_needs_dispatch_fix -%}
 # FIX 4 ({{ sim_id }}-only) — rollout dispatch bug, proven @ {{ rldx_commit[:8] if rldx_commit else 'HEAD' }}.
 # get_embodiment_tag_from_env_name() (env_utils.py:82) maps BOTH simpler_env_google/* and
 # simpler_env_widowx/* to OXE_BRIDGE_ORIG, but get_gym_env's dispatch (rollout_policy.py:253)
@@ -465,7 +489,8 @@ sed -i 's/elif env_embodiment in (EmbodimentTag.OXE_GOOGLE, EmbodimentTag.OXE_WI
 grep -qF 'EmbodimentTag.OXE_FRACTAL, EmbodimentTag.OXE_BRIDGE_ORIG)' "${ROLLOUT_PY}" \
     || die "FIX 4: sed did not apply the SIMPLER dispatch patch (see ${ROLLOUT_PY}:253)"
 log "  FIX 4 applied — SIMPLER envs now route to get_simpler_env_fn"
-
+{% endif %}
+{% if sim_needs_policy_fix -%}
 # FIX 6/7 ({{ sim_id }}-only) — RLDXSimPolicyWrapper.check_observation/_get_action are LIBERO-only
 # at this pin. SIMPLER envs emit decomposed state.x/y/z + quaternion rx/ry/rz/rw + gripper and
 # expect decomposed action.x/y/z/roll/pitch/yaw/gripper back, but the {{ embodiment_tag }} model
@@ -564,9 +589,9 @@ grep -qF 'SIMPLER ACTION MAPPING (FIX 7)' "${RLDX_POLICY_PY}" \
 find "${RLDX_DIR}/rldx/policy" -name '*.pyc' -delete 2>/dev/null || true
 rm -rf "${RLDX_DIR}/rldx/policy/__pycache__" 2>/dev/null || true
 log "  FIX 6/7 applied — SIMPLER obs+action adapter installed"
-
+{% endif %}
 # Verify the {{ sim_id }} venv: rollout-worker imports + register + gym.make(target).
-# SIMPLER renders via MuJoCo → set EGL here (the [7/8] rollout exports it too).
+# {{ sim_id | upper }} renders via MuJoCo → set EGL here (the [7/8] rollout exports it too).
 log "[5/8] Verifying {{ sim_id }} venv (rollout imports + gym.make target)..."
 FIRST_ENV='{{ tasks[0].env_name if tasks and tasks[0].env_name else "simpler_env_google/google_robot_pick_coke_can" }}'
 (
@@ -575,8 +600,12 @@ FIRST_ENV='{{ tasks[0].env_name if tasks and tasks[0].env_name else "simpler_env
     export PYOPENGL_PLATFORM=egl
     RLDX_VERIFY_ENV="${FIRST_ENV}" "${LIBERO_VENV}/bin/python" -c "
 import os
+{%- if sim_register_fn %}
 from {{ sim_register_module }} import {{ sim_register_fn }}
 {{ sim_register_fn }}()
+{%- else %}
+import {{ sim_register_module }}  # noqa: F401 — module-level loop registers gym envs on import
+{%- endif %}
 import gymnasium as gym
 env = gym.make(os.environ['RLDX_VERIFY_ENV'])
 env.reset(); env.close()

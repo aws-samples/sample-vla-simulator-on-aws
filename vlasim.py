@@ -51,7 +51,7 @@ DESTROY_PY = BASE_DIR / "destroy.py"
 # Keep in sync with deploy.py / destroy.py argument choices.
 VLA_CHOICES = [
     "gr00t", "gr00t-gr1", "gr00t-g1", "pi", "openvla-oft",
-    "lap", "rldx", "rldx-simpler", "openarm-isaac", "openarm-lift-act",
+    "lap", "rldx", "rldx-simpler", "rldx-gr1", "openarm-isaac", "openarm-lift-act",
 ]
 
 # Regions the userdata templates + DLAMI lookups are validated against (README).

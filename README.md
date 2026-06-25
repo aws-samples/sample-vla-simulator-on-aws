@@ -8,7 +8,7 @@ Run Vision-Language-Action (VLA) robot simulation workloads on AWS GPU instances
 
 | Feature | Detail |
 |---------|--------|
-| **Models** | GR00T N1.7-LIBERO, GR00T N1.6-3B (GR1), GR00T N1.6-G1 (Unitree G1 loco-manip), π0.5 (pi05_libero), OpenVLA-OFT (LIBERO-10), LAP-3B (LIBERO-Spatial), RLDX-1 (RLWRLD, LIBERO) |
+| **Models** | GR00T N1.7-LIBERO, GR00T N1.6-3B (GR1), GR00T N1.6-G1 (Unitree G1 loco-manip), π0.5 (pi05_libero), OpenVLA-OFT (LIBERO-10), LAP-3B (LIBERO-Spatial), RLDX-1 (RLWRLD — LIBERO / SimplerEnv Fractal / RoboCasa GR-1 Tabletop) |
 | **Simulation** | LIBERO / RoboCasa (robosuite + MuJoCo, headless EGL); Isaac Lab (OpenArm Lift-Cube collection) |
 | **Deploy** | AWS CDK + EC2 GPU (g6/g5, us-east-1; OpenArm needs a 4-GPU `.12xl`) |
 | **Results** | S3 (MP4 video + summary) + SNS email |
@@ -29,11 +29,14 @@ Run Vision-Language-Action (VLA) robot simulation workloads on AWS GPU instances
 | `lap` | — | LAP-3B (PaliGemma-3B + Flow Matching, JAX) | LIBERO-Spatial | Franka Panda (7-DOF) | `LAP-Demo` |
 | `rldx` | — | RLDX-1 (RLWRLD MSAT / Qwen3-VL-8B, eager)¹ | LIBERO-10 long-horizon | Franka Panda (7-DOF) | `RLDX-Demo` |
 | `rldx-simpler` | — | RLDX-1 (RLWRLD MSAT / Qwen3-VL-8B, eager)¹ ² | SimplerEnv Google-VM (Fractal) | Google Robot (OXE_FRACTAL real-robot embodiment) | `RLDX-Simpler-Demo` |
+| `rldx-gr1` | — | RLDX-1 (RLWRLD MSAT / Qwen3-VL-8B, eager)¹ ³ | RoboCasa GR-1 Tabletop (24-task) | GR-1 humanoid (bimanual + waist) | `RLDX-GR1-Demo` |
 | `openarm-lift-act` | — | Scripted state machine (ACT data collection) | Isaac Lab Lift-Cube | OpenArm (unimanual, 7-DOF + gripper) | `OpenArm-Lift-ACT-Demo` |
 
 ¹ RLDX-1 weights are under the **RLWRLD Model License v1.0 (non-commercial)**; "simulation benchmarking" is an explicit intended use. AWS-internal enablement / benchmarking only — not for customer-facing commercial positioning. Weights are downloaded from Hugging Face at runtime (not vendored).
 
 ² `rldx-simpler` is the same RLDX-1 model on SimplerEnv (Google Fractal real-robot embodiment, `OXE_FRACTAL`) instead of LIBERO — the one target here that exercises a real-robot OXE embodiment rather than a simulated Panda/humanoid. Setup clones SimplerEnv + ManiSkill2_real2sim at runtime (MIT). End-to-end validated 2026-06-24 (`g6.2xlarge` L4, full `deploy.py` 1-shot smoke); checkpoint pinned at `@f59c79e1`. See the [showcase](#rldx-simpler--rldx-1-rlwrld-on-simplerenv-google-fractal-real-robot-embodiment) and [Expected Results](#expected-results).
+
+³ `rldx-gr1` is the same RLDX-1 model family on **RoboCasa GR-1 Tabletop** (RLWRLD's own `RLDX-1-FT-GR1` checkpoint) — the only target here on a **bimanual humanoid with a waist DOF** (GR-1, `GR1ArmsAndWaistFourierHands`), distinct from all single-arm LIBERO/SimplerEnv clips. Renders via MuJoCo/robosuite (no Vulkan); the RoboCasa GR-1 tabletop-tasks suite is cloned at runtime (MIT). End-to-end validated 2026-06-25 (`g5.2xlarge` A10G 24GB, full `deploy.py` 1-shot smoke); checkpoint pinned at `@d0277c5c`. As source-verified, GR-1 needed **no SimplerEnv-style code patch** (dispatch + obs/action routing already correct at the pin) — only the shared dependency-pin fixes. Measured 0.80 (PnPCupToDrawerClose) and 0.20 (PnPMilkToMicrowaveClose) at n=5; reported paper SR = 58.7% (24-task average). See [Expected Results](#expected-results).
 
 ### Showcase — VLA Rollouts
 
@@ -100,6 +103,22 @@ Same RLDX-1 checkpoint family as `rldx` above, but evaluated on **SimplerEnv** (
 | ![RLDX-1 — pick coke can (SimplerEnv Fractal, success)](docs/showcase/rldx-simpler/simpler-google-pick-coke-can-success.gif) | ![RLDX-1 — move near (SimplerEnv Fractal, success)](docs/showcase/rldx-simpler/simpler-google-move-near-success.gif) |
 | MP4: [`rldx-simpler/simpler-google-pick-coke-can-success.mp4`](docs/showcase/rldx-simpler/simpler-google-pick-coke-can-success.mp4) | MP4: [`rldx-simpler/simpler-google-move-near-success.mp4`](docs/showcase/rldx-simpler/simpler-google-move-near-success.mp4) |
 | _Tight and consistent: episodes complete in 10–25 env-steps (shown at 0.25×)._ | _Real-robot Fractal embodiment — distinct from every LIBERO/RoboCasa clip above (shown at 0.25×)._ |
+
+#### `rldx-gr1` — RLDX-1 (RLWRLD) on RoboCasa GR-1 Tabletop (bimanual humanoid + waist)
+
+Same RLDX-1 family as `rldx`/`rldx-simpler`, but on **RoboCasa GR-1 Tabletop** with RLWRLD's own `RLDX-1-FT-GR1` checkpoint — the only target here on a **bimanual humanoid with a waist DOF** (`GR1ArmsAndWaistFourierHands`: two 7-DOF arms + Fourier dexterous hands + waist), distinct from every single-arm LIBERO/SimplerEnv clip. Each clip is dual-view (left ego / right third-person); the policy controls both hands and the waist to manipulate **articulated** scene objects (a drawer, a microwave door). Served eager via the same ZeroMQ policy server + sim client (two venvs, MuJoCo/robosuite headless EGL — no Vulkan), `g5.2xlarge` A10G 24 GB, validated 2026-06-25 via a full `deploy.py` 1-shot smoke. Two articulated tasks at n=5: `PnPCupToDrawerClose` `success_rate = 0.80` (4/5) and `PnPMilkToMicrowaveClose` `success_rate = 0.20` (1/5) — the combined 5/10 is consistent with the paper's 58.7% 24-task average. Weights are **non-commercial** (RLWRLD Model License v1.0) — sim benchmarking only.
+
+| Success — `PnPCupToDrawerClose` (SR 0.80, 4/5) | Success — `PnPMilkToMicrowaveClose` (SR 0.20, 1/5) |
+|---|---|
+| ![RLDX-1 GR-1 — cup into drawer + close (success)](docs/showcase/rldx-gr1/gr1-cup-drawer-success.gif) | ![RLDX-1 GR-1 — milk into microwave + close (success)](docs/showcase/rldx-gr1/gr1-milk-microwave-success.gif) |
+| MP4: [`rldx-gr1/gr1-cup-drawer-success.mp4`](docs/showcase/rldx-gr1/gr1-cup-drawer-success.mp4) | MP4: [`rldx-gr1/gr1-milk-microwave-success.mp4`](docs/showcase/rldx-gr1/gr1-milk-microwave-success.mp4) |
+| _Clean bimanual pick-place-close in 19 env-steps; the harder of the two tasks the policy reliably solves._ | _The rare success on the hard task (24 steps) — most runs time out (see failure clip)._ |
+
+| Failure — `PnPMilkToMicrowaveClose` (4/5 of this task, step-cap timeout) |
+|---|
+| ![RLDX-1 GR-1 — milk into microwave (failure, timeout)](docs/showcase/rldx-gr1/gr1-milk-microwave-failure.gif) |
+| MP4: [`rldx-gr1/gr1-milk-microwave-failure.mp4`](docs/showcase/rldx-gr1/gr1-milk-microwave-failure.mp4) (clip is 2× speed) |
+| _The dominant outcome on the microwave task: the run hits the 45-step cap (a *timeout*, not a hard error) without satisfying the goal predicate. SR 0.20 here means "rarely solved," not "1-in-5 reliable" — pair the number with the per-episode step counts in `simulation_results.csv`._ |
 
 #### `gr00t-gr1` — GR00T N1.6 on RoboCasa GR1 humanoid (22-DOF)
 
@@ -264,6 +283,10 @@ python vlasim.py deploy --vla rldx --email you@example.com
 # NON-COMMERCIAL weights (sim benchmarking) — AWS-internal enablement only.
 python vlasim.py deploy --vla rldx-simpler --email you@example.com
 
+# RLDX-1 (RLWRLD) — RoboCasa GR-1 Tabletop (bimanual humanoid + waist, MuJoCo, ~25-35 min)
+# NON-COMMERCIAL weights (sim benchmarking) — AWS-internal enablement only.
+python vlasim.py deploy --vla rldx-gr1 --email you@example.com
+
 # OpenArm Lift-Cube — scripted ACT demo collection in Isaac Lab (HDF5 only; needs a 4-GPU instance)
 python vlasim.py deploy --vla openarm-lift-act --email you@example.com
 ```
@@ -303,6 +326,9 @@ aws logs tail /rldx/userdata --follow --region us-east-1
 
 # RLDX-1 SimplerEnv logs
 aws logs tail /rldx-simpler/userdata --follow --region us-east-1
+
+# RLDX-1 RoboCasa GR-1 Tabletop logs
+aws logs tail /rldx-gr1/userdata --follow --region us-east-1
 ```
 
 ---
@@ -340,6 +366,7 @@ python vlasim.py destroy --vla openvla-oft --libero-suite spatial  # non-default
 python vlasim.py destroy --vla lap
 python vlasim.py destroy --vla rldx
 python vlasim.py destroy --vla rldx-simpler
+python vlasim.py destroy --vla rldx-gr1
 ```
 
 > `vlasim destroy` forwards to `destroy.py` unchanged — `python destroy.py --vla <target>`
@@ -368,6 +395,8 @@ The S3 results bucket is **retained** after stack deletion to preserve simulatio
 | `rldx` | libero_spatial (single task) | 97.8% LIBERO avg (paper, SOTA) | validated 2026-06-20 — 1.0 (5/5 ep, eager, g6.xlarge L4 sm_89, full `deploy.py` smoke) |
 | `rldx-simpler` | simpler_env_google/google_robot_pick_coke_can (Google-VM Fractal) | 81.5% Google-VM (paper README) | validated 2026-06-24 — 1.0 (5/5 ep, eager, g6.2xlarge L4, full `deploy.py` 1-shot smoke) |
 | `rldx-simpler` | simpler_env_google/google_robot_move_near (Google-VM Fractal) | 81.5% Google-VM (paper README) | validated 2026-06-24 — 1.0 (5/5 ep, eager, g6.2xlarge L4, full `deploy.py` 1-shot smoke) |
+| `rldx-gr1` | gr1_unified/PnPCupToDrawerClose (GR-1 bimanual + waist) | 58.7% 24-task avg (paper README) | validated 2026-06-25 — 0.80 (4/5 ep, eager, g5.2xlarge A10G 24GB, full `deploy.py` 1-shot smoke) |
+| `rldx-gr1` | gr1_unified/PnPMilkToMicrowaveClose (GR-1 bimanual + waist) | 58.7% 24-task avg (paper README) | validated 2026-06-25 — 0.20 (1/5 ep, eager, g5.2xlarge A10G 24GB, full `deploy.py` 1-shot smoke) |
 
 **Validated results (us-east-1, g6.12xlarge / g5.xlarge / g6.xlarge):**
 - GR00T N1.7: KITCHEN_SCENE3 = 1.0 (5/5), KITCHEN_SCENE4 = 1.0 (3/3)
@@ -378,6 +407,7 @@ The S3 results bucket is **retained** after stack deletion to preserve simulatio
 - OpenVLA-OFT: libero_spatial = 0.92 (46/50, 5 trials/task × 10 tasks, g6.xlarge) — paper Table I = 97.6%; the gap (5.6%p) is within sampling noise at n=50 (SE ≈ 3.8%p). 8/10 tasks at 5/5; misses concentrated on `on_the_ramekin` (2/5) and `next_to_the_plate` (4/5)
 - LAP-3B: libero_spatial = 0.98 (49/50, 5 trials/task × 10 tasks, g6.xlarge) — exceeds paper Table III range (85–95%); requires upstream `scripts/libero/main.py` vertical-flip patch (see `templates/lap-userdata.sh.j2`)
 - RLDX-1 (RLWRLD): libero_10 long-horizon, two tasks (eager, g6.xlarge L4 sm_89) — `STUDY_SCENE1` book→caddy = 1.0 (5/5, tight 20–23 steps), `KITCHEN_SCENE6` mug→microwave+close = 0.8 (4/5; successes span 32–47 steps and the one failure is a 90-step-cap timeout — marginal even when it succeeds, see the showcase caveat). Full `deploy.py` deploy; ZeroMQ policy server + sim client, two-venv (main + `libero_uv`). Default `n_envs=1` (5 recommended on g6.2xlarge+); checkpoint `RLWRLD/RLDX-1-FT-LIBERO@989037c6`, repo `RLWRLD/RLDX-1@ecbfaf80`
+- RLDX-1 (RLWRLD) GR-1 Tabletop: two articulated tasks (eager, g5.2xlarge A10G 24GB) — `PnPCupToDrawerClose` = 0.80 (4/5, clean 13–19 steps), `PnPMilkToMicrowaveClose` = 0.20 (1/5; the single success at 24 steps, the four failures all hit the 45-step cap as timeouts). Combined 5/10 ≈ paper 24-task avg 58.7%. The only target on a **bimanual humanoid + waist** (`GR1ArmsAndWaistFourierHands`); MuJoCo/robosuite headless EGL (no Vulkan). Source-verified needed **no SimplerEnv-style code patch** — confirmed live: the `[5/8]` gr1-venv verify (dispatch + obs/action contract + import-time env registration) passed without FIX 4/6/7, and `setup_gr1.sh` exited 0 (committed-as-files submodule → `git submodule update` is a no-op, no FIX 5). Server cold-load fast (~210s). Checkpoint `RLWRLD/RLDX-1-FT-GR1@d0277c5c`, repo `RLWRLD/RLDX-1@ecbfaf80`
 
 ---
 
@@ -563,6 +593,7 @@ Use Spot instances via `deploy.py --spot` (not yet implemented) for 60–70% sav
 - [RLDX-1](https://github.com/RLWRLD/RLDX-1) — RLWRLD dexterity-first VLA (MSAT / Qwen3-VL-8B, Apache-2.0 code)
 - [LIBERO](https://libero-project.github.io/) — Long-horizon robot benchmark
 - [SimplerEnv](https://github.com/allenzren/SimplerEnv) + [ManiSkill2_real2sim](https://github.com/allenzren/ManiSkill2_real2sim) — real-to-sim eval for Google Fractal / WidowX Bridge (MIT)
+- [robocasa-gr1-tabletop-tasks](https://github.com/robocasa/robocasa-gr1-tabletop-tasks) — RoboCasa GR-1 humanoid tabletop benchmark (24 tasks, MIT)
 
 ---
 
@@ -576,8 +607,9 @@ This sample's own code (CDK, generators, templates) is **MIT-0** (see `LICENSE`)
 | Physical Intelligence openpi (π0.5) | `pi`, `openarm-isaac` | Apache-2.0 | |
 | OpenVLA-OFT | `openvla-oft` | MIT | |
 | LAP-3B | `lap` | MIT (code) | |
-| **RLDX-1 (RLWRLD)** | `rldx`, `rldx-simpler` | **code Apache-2.0; weights RLWRLD Model License v1.0 (NON-COMMERCIAL)** | "simulation benchmarking" is an explicit intended use. AWS-internal enablement / benchmarking only — not for customer-facing commercial positioning. |
+| **RLDX-1 (RLWRLD)** | `rldx`, `rldx-simpler`, `rldx-gr1` | **code Apache-2.0; weights RLWRLD Model License v1.0 (NON-COMMERCIAL)** | "simulation benchmarking" is an explicit intended use. AWS-internal enablement / benchmarking only — not for customer-facing commercial positioning. |
 | LIBERO | LIBERO targets | MIT | |
 | SimplerEnv + ManiSkill2_real2sim | `rldx-simpler` | MIT | cloned at runtime by `setup_SimplerEnv.sh` |
+| RoboCasa GR-1 Tabletop tasks | `rldx-gr1` | MIT | cloned at runtime by `setup_gr1.sh` (`robocasa/robocasa-gr1-tabletop-tasks`) |
 
-The `rldx`/`rldx-simpler` targets are built on **RLDX-1 by [RLWRLD](https://github.com/RLWRLD/RLDX-1)** — gratefully acknowledged. RLDX-1's eval harness vendors LIBERO, SimplerEnv, RoboCasa, and GR-1 task suites as submodules (all MIT); this sample clones the RLDX-1 repo at a pinned commit at runtime and applies small in-place runtime fixes (dependency pins + a SimplerEnv dispatch patch) to the clone only — the upstream repo is never modified and no model weights are committed here.
+The `rldx`/`rldx-simpler`/`rldx-gr1` targets are built on **RLDX-1 by [RLWRLD](https://github.com/RLWRLD/RLDX-1)** — gratefully acknowledged. RLDX-1's eval harness vendors LIBERO, SimplerEnv, RoboCasa, and GR-1 task suites as submodules (all MIT); this sample clones the RLDX-1 repo at a pinned commit at runtime and applies small in-place runtime fixes (dependency pins, plus — for `rldx-simpler` only — a SimplerEnv dispatch + obs/action adapter patch) to the clone only — the upstream repo is never modified and no model weights are committed here. The `rldx-gr1` target needs no such code patch (its dispatch + obs/action routing are already correct at the pinned commit); only the shared dependency-pin fixes apply.
