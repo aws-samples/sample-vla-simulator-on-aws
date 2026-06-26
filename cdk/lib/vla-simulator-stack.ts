@@ -70,6 +70,13 @@ const INSTANCE_TYPES: Record<string, string[]> = {
   // RAM headroom, single-GPU xlarge as fallback. MUST have an explicit entry: the
   // `?? INSTANCE_TYPES['gr00t']` fallback below would otherwise pick gr00t's 12xlarge (wrong+costly).
   'rldx-gr1':    ['g6.2xlarge', 'g5.2xlarge',  'g6.xlarge',  'g5.xlarge'],
+  // RoboCasa Kitchen = same ~17GB MSAT/Qwen3-VL-8B policy server as rldx, + MuJoCo/robosuite
+  // renderer (like GR-1 — no Vulkan device alloc). n_envs=1 (sequential). Loads full kitchen
+  // scenes (heavier ~5GB asset set than GR-1 tabletop) → lead with .2xlarge for system RAM,
+  // single-GPU xlarge as fallback. [확인 필요] VRAM/RAM unmeasured (Gate 3 pending). MUST have an
+  // explicit entry: the `?? INSTANCE_TYPES['gr00t']` fallback below would otherwise pick gr00t's
+  // 12xlarge (wrong+costly).
+  'rldx-kitchen': ['g6.2xlarge', 'g5.2xlarge',  'g6.xlarge',  'g5.xlarge'],
   // Isaac Sim 5.1 + --enable_cameras render is heavy → 12xlarge tier (mirrors gr00t-gr1).
   'openarm-isaac': ['g6.12xlarge', 'g5.12xlarge', 'g6.2xlarge', 'g5.2xlarge'],
   // 16 collection envs × 2 TiledCameras → ResourceLoader needs >24 GB device mem, so a single-GPU

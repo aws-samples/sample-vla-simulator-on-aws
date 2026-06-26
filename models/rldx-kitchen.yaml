@@ -1,0 +1,222 @@
+# RLDX-1 (RLWRLD) × RoboCasa Kitchen (24-task) configuration
+# Paper: "RLDX-1: A Dexterity-First Vision-Language-Action Foundation Model"
+#        arXiv:2605.03269 (RLWRLD, 2026)
+# Repo:  https://github.com/RLWRLD/RLDX-1 (code: Apache-2.0)
+# Goal:  Single-arm mobile-manipulation kitchen eval — RLWRLD's own RLDX-1-FT-ROBOCASA on the
+#        24-task RoboCasa Kitchen benchmark (PandaOmron embodiment: a Panda arm on an Omron
+#        mobile base). Distinct embodiment from the LIBERO/SimplerEnv single-arm clips and the
+#        GR-1 bimanual humanoid: this is a wheeled mobile manipulator doing pick-and-place,
+#        doors, drawers and appliances across full kitchen scenes. gr00t-gr1 also runs on
+#        RoboCasa but evaluates a *different model* (NVIDIA GR00T) on the GR-1 tabletop split.
+#
+# CLI:   python deploy.py --vla rldx-kitchen [--email YOUR@EMAIL.COM]
+#        (target id `rldx-kitchen`, NOT `rldx-robocasa-kitchen` — the longer name overflows the
+#        S3 results-bucket name limit of 63 chars in ap-* regions; `rldx-kitchen` parallels the
+#        `rldx-gr1` id which likewise drops the "robocasa" prefix.)
+#
+# Architecture: Multi-Stream Action Transformer (MSAT) on a Qwen3-VL-8B backbone (same model
+#   family as the `rldx` LIBERO + `rldx-simpler` + `rldx-gr1` targets). RoboCasa Kitchen differs
+#   only in the sim client venv + rollout args (16-step action horizon, 720 max steps) + the
+#   asset-download step.
+# Eval pattern: RLWRLD's own server + client split (their run_scripts/eval/robocasa_kitchen/):
+#   - main .venv (py3.10, torch 2.7.0+cu126): rldx/eval/run_rldx_server.py — ZeroMQ policy server
+#   - robocasa_uv venv (py3.10, torch 2.5.1): rldx/eval/rollout_policy.py — RoboCasa/MuJoCo client
+#   Structurally identical to the `rldx` LIBERO target; SHARED template, branched by sim_id.
+#
+# RoboCasa Kitchen is MOSTLY clean like GR-1, with THREE deltas (DELTA 1/2 source-verified @
+# ecbfaf80 with no GPU; DELTA 3 cosmetic, found in the Gate-3 video). It is NOT a "free" sibling of
+# GR-1 — DELTA 1/2 were found by reading source, not by assuming the foundation is reused as-is:
+#   • dispatch is correct — get_gym_env routes `robocasa_panda_omron/*` via env_name.startswith
+#     ("robocasa") (rollout_policy.py:237). No FIX-4 analog (SIMPLER's dispatch bug does NOT apply).
+#   • obs/action contract is correct — the wrapper's is_libero heuristic ("state.x" or
+#     "video.image" in obs) is False for RoboCasa Kitchen (GrootRoboCasaEnv emits state.<...> from
+#     hand./body. + video.res256_image_side_0/1/wrist_0, never state.x/video.image), so actions
+#     flow through the generic else-branch unchanged. No FIX-6/7. (Verified: gymnasium_groot.py:90-117
+#     get_groot_observation + rldx_policy.py:301 is_libero gate.)
+#   • MuJoCo/EGL renderer (robosuite), NOT SAPIEN → no Vulkan loader. No FIX-8 (needs_vulkan).
+#   • the submodule is committed AS FILES (398 files, not a gitlink) → `git submodule update`
+#     is a no-op. No FIX-5 pre-clone. (Contrast: external_dependencies/robocasa365 IS a bare
+#     gitlink at this pin → the FUTURE rldx-robocasa-365 target WILL need a FIX-5 analog.)
+#   ── DELTA 1 (FIX 9, NEW to this target) ──────────────────────────────────────────────────────
+#   • setup_robocasa.sh runs `download_kitchen_assets.py -y` (~5 GB of textures/fixtures/objects).
+#     That script has NO argparse — the `-y` is silently ignored — and calls
+#     `input("...download ~5 Gb...Proceed? (y/n)")` UNCONDITIONALLY (download_kitchen_assets.py:186).
+#     On a headless EC2 userdata run (no tty/stdin) input() raises EOFError → setup_RoboCasa.sh
+#     (`set -euxo pipefail`) dies → the venv/assets never finish. This is RoboCasa-Kitchen-ONLY:
+#     GR-1's downloader (download_tabletop_assets.py) DOES have argparse `-y` (verified:
+#     download_tabletop_assets.py:22-30), which is exactly why GR-1's 1-shot Gate-3 passed.
+#     FIX 9 patches the runtime clone's download_kitchen_assets.py to auto-accept (vendoring-0
+#     invariant — the upstream commit is untouched, only the cloned working tree). Gated by
+#     sim_needs_asset_yes_fix so every other sim renders byte-identically.
+#   ── DELTA 2 (sim_protect_pins reconciliation) ────────────────────────────────────────────────
+#   • The kitchen robocasa fork (squarefk/robocasa) pins numpy==1.23.3 + numba==0.56.4 in its
+#     setup.py; numba 0.56.4 caps numpy <1.24. But the shared FIX-1 install list pins
+#     albumentations==1.4.18, which is import-reachable on the client venv
+#     (rldx/__init__.py:66 eager chain → processing_rldx.py:9 `import albumentations as A`) and
+#     REQUIRES numpy>=1.24.4 (PyPI metadata, verified). Those two pins are mutually exclusive.
+#     GR-1 never hit this because its fork ships numpy==1.26.4 + numba==0.61.2. We protect the
+#     GR-1-proven stack (numpy 1.26.4 / numba 0.61.2 — the same robosuite 1.5.1 + MuJoCo 3.2.6
+#     combo GR-1's Gate-3 ran on) so uv resolves albumentations + the robocasa runtime together.
+#     This is Gate-1 risk #1: if robocasa 0.2.0 hard-asserts numpy<1.24 at import, FIX 1 must
+#     instead pin numba up (0.61.2) rather than numpy down. Resolve at Gate 1, do not assume.
+#   ── DELTA 3 (FIX 10, video de-duplication — cosmetic, found at Gate-3) ────────────────────────
+#   • GrootRoboCasaEnv emits, for EACH of the 3 PandaOmron cameras, BOTH a res256 obs key AND a
+#     raw res512 copy (gymnasium_groot.py:112-115). The policy consumes only the res256 keys
+#     (rldx_policy.py:335-340,482-484). But VideoRecordingWrapper.step hstacks every "video.*" obs
+#     key (video_recording_wrapper.py:413) → the saved MP4 is a 6-panel 1536-wide strip showing
+#     each camera twice (256 + 512). Unlike DELTA 1/2 this is NOT a correctness bug — eval/SR are
+#     unaffected — but it makes the showcase clip noisy. FIX 10 narrows the recorder to res256 so
+#     the video is a clean 3-panel strip. RoboCasa-Kitchen-only (other sims have no res512 keys).
+#     Found by inspecting the Gate-3 output video, not pre-deploy source reading; gated by
+#     sim_drop_res512_video. PENDING live re-validation on the next deploy (committed clips are
+#     already post-processed to this form).
+#
+# LICENSE — NON-COMMERCIAL. Weights are under the RLWRLD Model License v1.0:
+#   intended use explicitly includes "simulation benchmarking" (this PoC qualifies).
+#   out-of-scope: commercial deployment. Keep outputs to AWS-internal enablement only.
+#   Weights are downloaded from HF at runtime (NOT vendored) → no non-commercial weight is
+#   committed. RoboCasa (squarefk/robocasa fork of ARISE-Initiative/robocasa) is cloned at
+#   runtime (MIT). See NOTICE + README Acknowledgments for the full attribution chain.
+#
+# VALIDATED 2026-06-26 (Gate 3, g6.2xlarge L4 24GB, us-east-1, full deploy.py 1-shot E2E):
+#   WaitCondition SUCCESS, instance self-terminated, stack destroyed (NAT/EIP 0 residual).
+#   DELTA 1/2 confirmed LIVE: FIX 9 made the ~5GB asset download run headless (no EOFError), and
+#   sim_protect_pins resolved albumentations + the robocasa runtime together (DELTA-2 risk #1 did
+#   NOT materialise — robocasa imported fine against numpy 1.26.4 / numba 0.61.2, no hard <1.24
+#   assert). Measured SR: OpenSingleDoor 0.80 (4/5), OpenDrawer 0.80 (4/5) ≈ paper 70.6% 24-task avg.
+#   Server cold load ~300s (well under the 2400s watchdog). End-to-end wall-clock ~29 min.
+#   DELTA 3 (FIX 10) was DISCOVERED from this run's video (6-panel duplicate-resolution strip) and
+#   added afterward; the committed showcase clips are post-processed to the 3-panel form. FIX 10
+#   itself re-validates live on the next deploy (cosmetic, no SR/eval impact).
+
+model:
+  id: rldx-kitchen
+  version: "FT-ROBOCASA"
+
+  # SAME pin as the rldx LIBERO + rldx-simpler + rldx-gr1 targets; independent per-yaml pin so a
+  # re-pin of one target can't silently move kitchen (session risk #10). origin/main HEAD == this.
+  rldx_commit: "ecbfaf80cd031dcc892186ed30465de3591047e6"
+
+  # HF checkpoint (RoboCasa Kitchen fine-tuned). eval_robocasa.sh takes CKPT_NAME as $1 and the
+  # README/run_scripts pass RLWRLD/RLDX-1-FT-ROBOCASA (verified: README.md:294,310,352 +
+  # run_scripts/eval/robocasa_kitchen/README.md). Pinned to the repo's frozen main HEAD
+  # (HF API: lastModified 2026-05-06, gated=False, 13 siblings). The repo has not moved since the
+  # FT-ROBOCASA release, so pinning up-front == locking the validated SHA; makes the Gate-3
+  # deploy bit-for-bit reproducible (same flow as rldx-gr1).
+  hf_repo: "RLWRLD/RLDX-1-FT-ROBOCASA"
+  hf_model_revision: "e8279a383be40b6d33e541a8628d22c9b8194a6c"
+  # VLM backbone pulled by the checkpoint config at server load — pre-download in userdata so
+  # the first server load does not race the warmup timeout fetching ~16GB on a fresh instance.
+  backbone_hf_repo: "Qwen/Qwen3-VL-8B-Instruct"
+
+  # ── RoboCasa Kitchen sim parameterisation (consumed by generate_rldx → shared template) ──
+  sim_id: robocasa-kitchen
+  # setup_robocasa.sh is the ENTRY script (not the inner setup_RoboCasa.sh) — it calls the inner
+  # script AND then disables the sim venv's flash-attn (torch-ABI mismatch guard) AND applies the
+  # seed_clamp_64bit patch under run_scripts/eval/robocasa_kitchen/patches/. (Verified:
+  # setup_robocasa.sh:7-35.)
+  sim_setup_script: "run_scripts/eval/robocasa_kitchen/setup_robocasa.sh"
+  sim_venv_subpath: "rldx/eval/sim/robocasa/robocasa_uv/.venv"
+  # FIX 5 does NOT apply — external_dependencies/robocasa is committed as 398 regular files (not a
+  # gitlink), so the inner setup's `git submodule update --init` is a no-op. Leaving sim_clone_url
+  # empty makes the template skip the SIMPLER-only pre-clone.
+  sim_clone_url: ""
+  sim_clone_subpath: ""
+  # FIX 1 (broadened) — protect the pins the RoboCasa runtime + the import-reachable
+  # albumentations need. Passed UNQUOTED into uv pip install (word-split). robosuite 1.5.1 +
+  # mujoco 3.2.6 = the kitchen sim engine; gymnasium 0.29.1 = sim vector-env layer.
+  # numpy 1.26.4 + numba 0.61.2 = the GR-1-proven combo that satisfies BOTH albumentations
+  # (numpy>=1.24.4) and the robocasa runtime — deliberately overriding the kitchen fork's
+  # numpy==1.23.3/numba==0.56.4 setup.py pins (see DELTA 2 above). (robosuite/mujoco verified:
+  # GR-1 inner setup + robocasa setup.py mujoco==3.2.6.)
+  sim_protect_pins: "gymnasium==0.29.1 numpy==1.26.4 numba==0.61.2 robosuite==1.5.1 mujoco==3.2.6"
+  # Env registration — kitchen registers at IMPORT TIME via a module-level loop
+  # (gymnasium_groot.py:170 `for ENV in REGISTERED_ENVS:`), NOT a callable register_*() function
+  # like SIMPLER. sim_register_fn EMPTY → the template's verify block imports the module to
+  # trigger registration. SAME module as GR-1 (both robots register from gymnasium_groot).
+  sim_register_module: "robocasa.utils.gym_utils.gymnasium_groot"
+  sim_register_fn: ""
+  # FIX 4 (dispatch) does NOT apply — `robocasa_panda_omron/*` routes correctly through
+  # get_gym_env's startswith("robocasa") branch (rollout_policy.py:237). SIMPLER-only.
+  sim_needs_dispatch_fix: false
+  # FIX 6/7 (obs/action adapter) does NOT apply — is_libero is False for RoboCasa Kitchen and the
+  # generic action passthrough is correct. SIMPLER-only.
+  sim_needs_policy_fix: false
+  # FIX 8 (Vulkan) does NOT apply — RoboCasa Kitchen renders via MuJoCo/EGL (MUJOCO_GL=egl), not
+  # SAPIEN. (Verified: no sapien import anywhere in the robocasa kitchen path.)
+  needs_vulkan: false
+  # FIX 9 (NEW, RoboCasa-Kitchen-only) — patch the cloned download_kitchen_assets.py so its
+  # unconditional input() prompt auto-accepts on a headless host. See DELTA 1 above.
+  sim_needs_asset_yes_fix: true
+  # FIX 10 (NEW, RoboCasa-Kitchen-only) — GrootRoboCasaEnv emits BOTH a res256 and a res512 copy
+  # of each of the 3 PandaOmron cameras (gymnasium_groot.py:112-115). The policy only ever consumes
+  # the res256 keys; res512 is never a model input. But VideoRecordingWrapper.step hstacks every
+  # "video.*" obs key → the saved MP4 is a 6-panel 1536-wide strip (each camera shown twice, 256 +
+  # 512). True here → the template narrows the recorder to res256, producing a clean 3-panel video
+  # (one view per camera, exactly what the policy sees). DELTA-3 (cosmetic, video framing only —
+  # obs/policy/eval untouched, SR unaffected). Observed live at Gate-3 (2026-06-26); the committed
+  # showcase clips are post-processed to this 3-panel form. PENDING live re-validation on next deploy.
+  sim_drop_res512_video: true
+
+  # run_rldx_server.py arguments. SAME server as LIBERO/SIMPLER/GR-1. eval_robocasa.sh passes NO
+  # --no-strict and NO --num-inference-timesteps (verified: eval_robocasa.sh:38-43) →
+  # server_extra_args EMPTY, STRICT validation on. embodiment_tag = GENERAL_EMBODIMENT
+  # (eval_robocasa.sh:40 + env_utils.py:61-62; the README "PandaOmron" label is cosmetic).
+  embodiment_tag: "GENERAL_EMBODIMENT"
+  server_extra_args: []
+  compile: ""                     # eager (same rationale as rldx.yaml — no sm_120 dependency)
+
+  # rollout_policy.py arguments (verified from run_scripts/eval/robocasa_kitchen/eval_robocasa.sh:
+  # 63-70): --max_episode_steps 720, --n_action_steps 16, --n_envs 1, --n_episodes (default 50;
+  # PoC trims to a small n).
+  max_episode_steps: 720
+  n_action_steps: 16
+  # n_envs: eval_robocasa.sh uses 1 (sequential, sharded across GPUs upstream — single GPU here).
+  # (Verified: eval_robocasa.sh:69.)
+  n_envs: 1
+
+  # Result-card labels (cosmetic; shown in S3 per-video context txt + SNS summary).
+  robot_label: "PandaOmron (Franka Panda arm on an Omron LD mobile base; single-arm mobile manipulator)"
+  sim_label: "RoboCasa Kitchen (robosuite 1.5.1 + MuJoCo 3.2.6, full kitchen scenes, headless EGL)"
+
+  # Server warmup watchdog (seconds). Same MSAT/Qwen3-VL-8B 7B+ checkpoint as rldx-gr1 (which
+  # measured a fast ~210s cold load). 2400s (40min) keeps wide margin and stays well under
+  # creationpolicy_timeout. The extra headroom is free — warmup ends as soon as the port opens.
+  server_warmup_timeout: 2400
+
+instance:
+  # GPU-validated 2026-06-26 (Gate 3): ran on g6.2xlarge (L4 24GB) — the top preference, picked by
+  # AzSelector (NOT a fallback). No OOM (same ~17GB MSAT/Qwen3-VL-8B as LIBERO/SIMPLER/GR-1; MuJoCo
+  # render is light, no Vulkan device alloc). Full kitchen scenes loaded fine in 24GB + the .2xlarge
+  # system RAM. Keeping the 24GB-card preference; a larger card is unnecessary for this eval.
+  preferred: [g6.2xlarge, g5.2xlarge, g6.xlarge, g5.xlarge]
+  ebs_gb: 220          # repo + robocasa_uv venv + ~5GB kitchen assets + FT-ROBOCASA ckpt + Qwen backbone + videos
+  ebs_gb_bridge: 220   # bridge not supported — same value
+  # PT180M = generous headroom. Gate-3 measured ~29 min end-to-end (asset DL was only ~3-4 min, far
+  # faster than the original 15-20 min estimate). Could tighten to ~PT90M, but the extra ceiling is
+  # free (WaitCondition signals as soon as the rollout finishes) and protects a cold-cache re-run.
+  creationpolicy_timeout: PT180M
+
+# Evaluation tasks — flat list (LAP/rldx style). env_name uses the `robocasa_panda_omron/<TASK>_
+# PandaOmron_Env` namespace registered by the module-level loop in gymnasium_groot.py (the
+# PandaOmron robot alias gets the robocasa_panda_omron/ id — verified: gymnasium_groot.py:141 +
+# models/robots/__init__.py:730 "PandaOmron":"panda_omron"). Two fixed external cameras
+# (left/right) + one wrist camera, 256×256 (verified: run_scripts/eval/robocasa_kitchen/README.md).
+# eval_robocasa.sh lists all 24 (eval_robocasa.sh:15-24); reported 24-task average SR = 70.6%
+# (README.md:62). PoC: 2 visually-distinct ARTICULATED-object tasks (door + drawer) for the first
+# showcase pass, small n. The README MUST report the actual measured rate, not assume 70.6%.
+tasks:
+  - suite: robocasa_kitchen
+    env_name: "robocasa_panda_omron/OpenSingleDoor_PandaOmron_Env"
+    num_episodes: 5
+    description: "RoboCasa Kitchen — open a single cabinet door (PandaOmron mobile manipulator; articulated door; the setup-script sanity env, so a known-good first target)"
+  - suite: robocasa_kitchen
+    env_name: "robocasa_panda_omron/OpenDrawer_PandaOmron_Env"
+    num_episodes: 5
+    description: "RoboCasa Kitchen — open a kitchen drawer (PandaOmron mobile manipulator; articulated drawer; distinct from the GR-1 PnP-into-receptacle clips and all single-arm LIBERO/SimplerEnv tasks)"
+
+# Bridge mode (vla-hub serving) NOT supported — same rationale as the rldx LIBERO/SIMPLER/GR-1
+# targets (fused-kernel/ZeroMQ serving conflicts with vla-hub guardrails). See
+# accounts/startups/rlwrld/README.md §4.
+bridge:
+  enabled: false

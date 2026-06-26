@@ -164,7 +164,7 @@ def _maybe_import_orphan_bucket(
 def main():
     parser = argparse.ArgumentParser(description="vla-simulator 1-Click Deploy")
     parser.add_argument("--vla", required=True,
-                        choices=["gr00t", "gr00t-gr1", "gr00t-g1", "pi", "openvla-oft", "lap", "rldx", "rldx-simpler", "rldx-gr1", "openarm-isaac", "openarm-lift-act"],
+                        choices=["gr00t", "gr00t-gr1", "gr00t-g1", "pi", "openvla-oft", "lap", "rldx", "rldx-simpler", "rldx-gr1", "rldx-kitchen", "openarm-isaac", "openarm-lift-act"],
                         help="VLA model to deploy")
     parser.add_argument("--bridge", action="store_true",
                         help="Bridge mode: use vla-hub ECS endpoint instead of local model")
@@ -271,6 +271,8 @@ def main():
         stack_name = "RLDX-Simpler-Demo"
     elif args.vla == "rldx-gr1":
         stack_name = "RLDX-GR1-Demo"
+    elif args.vla == "rldx-kitchen":
+        stack_name = "RLDX-Kitchen-Demo"
     elif args.vla == "openarm-isaac":
         stack_name = "OpenArm-Isaac-Demo"
     elif args.vla == "openarm-lift-act":
@@ -356,6 +358,8 @@ def main():
             print("  Estimated time: ~90-140 min (uv sync + simpler_uv venv + ManiSkill2_real2sim clone ~35-45min + ckpt+backbone DL ~15min + server warmup ~3min + SAPIEN eager rollout)")
         elif args.vla == "rldx-gr1":
             print("  Estimated time: ~25-35 min (Gate-3 measured 2026-06-25, g5.2xlarge: uv syncs + robocasa_uv venv + tabletop assets ~12min + ckpt+backbone DL ~4min + fast server warmup ~210s + MuJoCo eager rollout ~10min)")
+        elif args.vla == "rldx-kitchen":
+            print("  Estimated time: ~25-35 min (Gate-3 measured 2026-06-26, g6.2xlarge: uv syncs + robocasa_uv venv + kitchen asset DL ~3-4min + ckpt+backbone DL ~4min + server warmup ~300s + MuJoCo eager rollout ~10min)")
         elif args.vla == "openarm-isaac":
             print("  Estimated time: ~120-180 min (docker pull Isaac Lab image ~20-30min + openarm/lerobot install + ckpt DL + sim boot ~10min + single rollout)")
         elif args.vla == "openarm-lift-act":

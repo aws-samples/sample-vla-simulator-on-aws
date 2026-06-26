@@ -434,6 +434,71 @@ fi
 [ -f "${SIM_EXT_REPO}/setup.py" ] || [ -f "${SIM_EXT_REPO}/pyproject.toml" ] \
     || die "FIX 5: ${SIM_EXT_REPO} not populated after clone"
 {% endif -%}
+{% if sim_needs_asset_yes_fix -%}
+# FIX 9 ({{ sim_id }}-only) — non-interactive asset download. {{ sim_setup_script }} runs
+# download_kitchen_assets.py (~5 GB), which has NO argparse — the `-y` the setup passes is
+# silently ignored — and calls input("...Proceed? (y/n)") unconditionally
+# (download_kitchen_assets.py:186, + 3 more input() calls). On this headless host (no tty/stdin)
+# input() raises EOFError → setup's `set -e` dies before the venv/assets finish. Shadow input()
+# in JUST that cloned script to auto-accept (vendoring-0 invariant: only the runtime clone's
+# working tree is edited, the upstream commit is untouched). GR-1's downloader has a real
+# argparse `-y`, so this is RoboCasa-Kitchen-only.
+log "[5/8] FIX 9: making download_kitchen_assets.py non-interactive (auto-accept ~5GB DL)..."
+ASSET_DL_PY="${RLDX_DIR}/external_dependencies/robocasa/robocasa/scripts/download_kitchen_assets.py"
+[ -f "${ASSET_DL_PY}" ] \
+    || die "FIX 9: download_kitchen_assets.py not found at expected path — commit drifted?"
+grep -qF 'input(' "${ASSET_DL_PY}" \
+    || die "FIX 9: no input() call in download_kitchen_assets.py — commit drifted, re-verify?"
+if grep -qF 'FIX 9: auto-accept (headless)' "${ASSET_DL_PY}"; then
+    log "  FIX 9 already applied — skip"
+else
+    # Prepend a builtins.input shadow that returns 'y' for every prompt. Covers all 4 input()
+    # call sites at once and survives line-number drift. Re-checked compiles below.
+    TMP_ASSET_DL=$(mktemp)
+    {
+        echo "import builtins as _b  # FIX 9: auto-accept (headless) — injected by rldx userdata"
+        echo "_b.input = lambda *_a, **_k: 'y'  # FIX 9"
+        cat "${ASSET_DL_PY}"
+    } > "${TMP_ASSET_DL}"
+    mv "${TMP_ASSET_DL}" "${ASSET_DL_PY}"
+    "${RLDX_DIR}/.venv/bin/python" -c "import py_compile,sys; py_compile.compile('${ASSET_DL_PY}', doraise=True)" \
+        2>&1 | tee /tmp/rldx_fix9_compile.log \
+        || die "FIX 9: download_kitchen_assets.py no longer compiles (see /tmp/rldx_fix9_compile.log)"
+    log "  FIX 9 applied — download_kitchen_assets.py input() auto-accepts"
+fi
+{% endif -%}
+{% if sim_drop_res512_video -%}
+# FIX 10 ({{ sim_id }}-only) — de-duplicate the recorded video to one panel per camera.
+# RoboCasa Kitchen's GrootRoboCasaEnv emits, for EACH of the 3 PandaOmron cameras (side_0,
+# side_1, wrist_0), BOTH a processed res256 obs key AND a raw res512 copy
+# (gymnasium_groot.py:112-115 `obs[mapped_name.replace("256","512")] = np.copy(...)`). The policy
+# only ever consumes the res256 keys (rldx_policy.py:335-340,482-484); res512 is never an input.
+# But VideoRecordingWrapper.step() hstacks EVERY obs key containing "video" (video_recording_
+# wrapper.py:413), so the saved MP4 becomes a 6-panel 1536-wide strip — each camera shown twice
+# (256 + 512). Narrow that collector to skip the res512 duplicates → a clean 3-panel strip, one
+# view per camera, matching exactly what the policy sees. Other sims (GR-1/SIMPLER/LIBERO) have no
+# res512 keys, so this is RoboCasa-Kitchen-only and a no-op elsewhere. Patches the runtime clone
+# ONLY (vendoring-0 invariant); obs/policy/eval are untouched (video framing only → SR unaffected).
+log "[5/8] FIX 10: de-duplicating recorded video (drop res512 panels, keep one per camera)..."
+VIDREC_PY="${RLDX_DIR}/rldx/eval/sim/wrapper/video_recording_wrapper.py"
+[ -f "${VIDREC_PY}" ] \
+    || die "FIX 10: video_recording_wrapper.py not found at expected path — commit drifted?"
+if grep -qF 'FIX 10' "${VIDREC_PY}"; then
+    log "  FIX 10 already applied — skip"
+else
+    grep -qF 'if "video" in k:' "${VIDREC_PY}" \
+        || die "FIX 10: expected video-collector line not found in video_recording_wrapper.py — commit drifted?"
+    sed -i 's/if "video" in k:/if "video" in k and "res512" not in k:  # FIX 10: drop res512 duplicates/' "${VIDREC_PY}"
+    grep -qF 'res512' "${VIDREC_PY}" \
+        || die "FIX 10: sed did not apply the res512 filter (see ${VIDREC_PY})"
+    "${RLDX_DIR}/.venv/bin/python" -c "import py_compile; py_compile.compile('${VIDREC_PY}', doraise=True)" \
+        || die "FIX 10: video_recording_wrapper.py no longer compiles after patch"
+    # Clear stale bytecode so the sim venv imports the edited source.
+    find "${RLDX_DIR}/rldx/eval/sim/wrapper" -name '*.pyc' -delete 2>/dev/null || true
+    rm -rf "${RLDX_DIR}/rldx/eval/sim/wrapper/__pycache__" 2>/dev/null || true
+    log "  FIX 10 applied — recorded video now one panel per camera (res256 only)"
+fi
+{% endif -%}
 log "[5/8] Running RLWRLD {{ sim_setup_script }} (builds {{ sim_id }} venv)..."
 cd "${RLDX_DIR}"
 # Same `set +e` + `trap - ERR` dance as the LIBERO branch: the setup script runs

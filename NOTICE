@@ -14,14 +14,19 @@ in this repository). Each is governed by its own license:
 - LIBERO — MIT. github.com/Lifelong-Robot-Learning/LIBERO
 - SimplerEnv + ManiSkill2_real2sim — MIT. github.com/allenzren/SimplerEnv
 - RoboCasa GR-1 Tabletop tasks — MIT. github.com/robocasa/robocasa-gr1-tabletop-tasks
+- RoboCasa (Kitchen, 24-task) — MIT. github.com/squarefk/robocasa (fork of
+  github.com/ARISE-Initiative/robocasa); kitchen scene assets (~5 GB) download at runtime
+  from the RoboCasa asset host. robosuite — MIT. github.com/ARISE-Initiative/robosuite
 
 - RLDX-1 (RLWRLD) — github.com/RLWRLD/RLDX-1
     * Code: Apache-2.0, Copyright (c) RLWRLD.
     * Model weights (RLWRLD/RLDX-1-FT-*): RLWRLD Model License v1.0 — NON-COMMERCIAL.
       "simulation benchmarking" is an explicit intended use; commercial deployment
       is out of scope. Used here for AWS-internal enablement / benchmarking only.
-    * The rldx / rldx-simpler / rldx-gr1 targets clone the RLDX-1 repo at a pinned commit
-      at runtime and apply small in-place fixes to that clone only (dependency pins; plus,
-      for rldx-simpler only, a SimplerEnv dispatch + obs/action adapter patch). rldx-gr1
-      needs no code patch. The upstream repository is not modified, and no model weights
-      are committed to this repository (they download from Hugging Face at runtime).
+    * The rldx / rldx-simpler / rldx-gr1 / rldx-kitchen targets clone the RLDX-1 repo at a
+      pinned commit at runtime and apply small in-place fixes to that clone only (dependency
+      pins; plus, for rldx-simpler only, a SimplerEnv dispatch + obs/action adapter patch;
+      for rldx-kitchen only, making the cloned RoboCasa asset downloader non-interactive so it
+      runs on a headless host). rldx-gr1 needs no code patch. The upstream repository is not
+      modified, and no model weights are committed to this repository (they download from
+      Hugging Face at runtime).

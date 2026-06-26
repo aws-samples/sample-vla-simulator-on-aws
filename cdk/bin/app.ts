@@ -12,6 +12,7 @@
  *   npx cdk deploy RLDX-Demo                   -c region=us-east-1 -c vla=rldx
  *   npx cdk deploy RLDX-Simpler-Demo           -c region=us-east-1 -c vla=rldx-simpler
  *   npx cdk deploy RLDX-GR1-Demo               -c region=us-east-1 -c vla=rldx-gr1
+ *   npx cdk deploy RLDX-Kitchen-Demo  -c region=us-east-1 -c vla=rldx-kitchen
  *   npx cdk deploy OpenArm-Isaac-Demo          -c region=us-east-1 -c vla=openarm-isaac
  *   npx cdk deploy OpenArm-Lift-ACT-Demo       -c region=us-east-1 -c vla=openarm-lift-act
  */
@@ -26,9 +27,9 @@ const app = new cdk.App();
 const region = app.node.tryGetContext('region') ?? 'ap-northeast-2';
 const vla: string = app.node.tryGetContext('vla');
 
-if (!vla || !['gr00t', 'gr00t-gr1', 'gr00t-g1', 'pi', 'openvla-oft', 'lap', 'rldx', 'rldx-simpler', 'rldx-gr1', 'openarm-isaac', 'openarm-lift-act'].includes(vla)) {
+if (!vla || !['gr00t', 'gr00t-gr1', 'gr00t-g1', 'pi', 'openvla-oft', 'lap', 'rldx', 'rldx-simpler', 'rldx-gr1', 'rldx-kitchen', 'openarm-isaac', 'openarm-lift-act'].includes(vla)) {
   throw new Error(
-    'CDK context "vla" is required. Pass -c vla=gr00t, -c vla=gr00t-gr1, -c vla=gr00t-g1, -c vla=pi, -c vla=openvla-oft, -c vla=lap, -c vla=rldx, -c vla=rldx-simpler, -c vla=rldx-gr1, -c vla=openarm-isaac, or -c vla=openarm-lift-act.\n' +
+    'CDK context "vla" is required. Pass -c vla=gr00t, -c vla=gr00t-gr1, -c vla=gr00t-g1, -c vla=pi, -c vla=openvla-oft, -c vla=lap, -c vla=rldx, -c vla=rldx-simpler, -c vla=rldx-gr1, -c vla=rldx-kitchen, -c vla=openarm-isaac, or -c vla=openarm-lift-act.\n' +
     'Use deploy.py which sets this automatically.',
   );
 }
@@ -58,6 +59,7 @@ const stackNameMap: Record<string, string> = {
   'rldx':        'RLDX-Demo',
   'rldx-simpler': 'RLDX-Simpler-Demo',
   'rldx-gr1':    'RLDX-GR1-Demo',
+  'rldx-kitchen': 'RLDX-Kitchen-Demo',
   'openarm-isaac': 'OpenArm-Isaac-Demo',
   'openarm-lift-act': 'OpenArm-Lift-ACT-Demo',
 };
@@ -78,6 +80,7 @@ const descriptionMap: Record<string, string> = {
   'rldx':        'RLDX-1 (RLWRLD MSAT/Qwen3-VL-8B) + LIBERO (Franka Panda, ZeroMQ policy server + sim client, eager)',
   'rldx-simpler': 'RLDX-1 (RLWRLD MSAT/Qwen3-VL-8B) + SimplerEnv (Google Robot, OXE_FRACTAL real-robot embodiment, ZeroMQ policy server + sim client, eager)',
   'rldx-gr1':    'RLDX-1 (RLWRLD MSAT/Qwen3-VL-8B) + RoboCasa GR-1 Tabletop (GR-1 bimanual humanoid + waist, ZeroMQ policy server + MuJoCo sim client, eager)',
+  'rldx-kitchen': 'RLDX-1 (RLWRLD MSAT/Qwen3-VL-8B) + RoboCasa Kitchen 24-task (PandaOmron single-arm mobile manipulator, ZeroMQ policy server + MuJoCo sim client, eager)',
   'openarm-isaac': 'π0.5 (LeRobot pi05 folding_latest, 16-DOF) + Isaac Lab bimanual OpenArm (pipe-proof)',
   'openarm-lift-act': 'OpenArm unimanual Lift-Cube × ACT — scripted teleop-free demo collection (HDF5)',
 };

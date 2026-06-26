@@ -43,6 +43,7 @@ STACK_NAMES = {
     "rldx": "RLDX-Demo",
     "rldx-simpler": "RLDX-Simpler-Demo",
     "rldx-gr1": "RLDX-GR1-Demo",
+    "rldx-kitchen": "RLDX-Kitchen-Demo",
     "openarm-isaac": "OpenArm-Isaac-Demo",
     "openarm-lift-act": "OpenArm-Lift-ACT-Demo",
 }
@@ -58,7 +59,7 @@ def _validate_region(region: str) -> str:
 def main():
     parser = argparse.ArgumentParser(description="vla-simulator Stack Destroy")
     parser.add_argument("--vla", required=True,
-                        choices=["gr00t", "gr00t-gr1", "gr00t-g1", "pi", "openvla-oft", "lap", "rldx", "rldx-simpler", "rldx-gr1", "openarm-isaac", "openarm-lift-act"],
+                        choices=["gr00t", "gr00t-gr1", "gr00t-g1", "pi", "openvla-oft", "lap", "rldx", "rldx-simpler", "rldx-gr1", "rldx-kitchen", "openarm-isaac", "openarm-lift-act"],
                         help="VLA model stack to destroy")
     parser.add_argument("--region", "-r", metavar="REGION",
                         help="AWS region (overrides simulator-config.yaml)")

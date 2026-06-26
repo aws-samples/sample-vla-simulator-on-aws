@@ -16,6 +16,7 @@ generate.py — model yaml + simulator-config.yaml 읽어 assets/userdata/{vla}.
     python generate.py --vla rldx        [--config simulator-config.yaml] [--dry-run]
     python generate.py --vla rldx-simpler [--config simulator-config.yaml] [--dry-run]
     python generate.py --vla rldx-gr1    [--config simulator-config.yaml] [--dry-run]
+    python generate.py --vla rldx-kitchen [--config simulator-config.yaml] [--dry-run]
     python generate.py --vla openarm-isaac [--config simulator-config.yaml] [--dry-run]
     python generate.py --vla openarm-lift-act [--config simulator-config.yaml] [--dry-run]
 """
@@ -323,6 +324,17 @@ def generate_rldx(config: dict, dry_run: bool, vla: str = "rldx") -> str:
         # Vulkan) → template skips the block, LIBERO render stays byte-identical.
         # Source of truth: simpler-env/ManiSkill2_real2sim/docker/{Dockerfile,nvidia_icd.json}.
         "needs_vulkan": model.get("needs_vulkan", ""),
+        # FIX 9 — RoboCasa-Kitchen's setup runs download_kitchen_assets.py, which has NO argparse
+        # (the `-y` it's passed is ignored) and calls input() unconditionally → EOFError on a
+        # headless host. True for kitchen → the template shadows input() in the cloned script.
+        # Empty/False for every other sim (GR-1's downloader has a real argparse -y) → byte-ident.
+        "sim_needs_asset_yes_fix": bool(model.get("sim_needs_asset_yes_fix", False)),
+        # FIX 10 — RoboCasa-Kitchen's GrootRoboCasaEnv emits both a res256 and a res512 copy of
+        # each of the 3 PandaOmron cameras; the policy only uses res256, but the video recorder
+        # hstacks every "video.*" obs key → a 6-panel strip (each camera shown twice). True for
+        # kitchen → the template narrows the recorder to res256, yielding a clean 3-panel video.
+        # Other sims have no res512 keys, so empty/False elsewhere → byte-identical.
+        "sim_drop_res512_video": bool(model.get("sim_drop_res512_video", False)),
         # server CLI args appended after --use-sim-policy-wrapper. LIBERO ships --no-strict;
         # SIMPLER (eval_simpler.sh) runs strict (no flag). NOTE: eval_simpler.sh ALSO passes
         # --num-inference-timesteps 10, but that is NOT a ServerConfig field at pin ecbfaf80
@@ -495,7 +507,7 @@ def generate_pi(config: dict, resolved_vpc: str, resolved_nlb: str, dry_run: boo
 
 def main():
     parser = argparse.ArgumentParser(description="vla-simulator UserData 스크립트 생성")
-    parser.add_argument("--vla", required=True, choices=["gr00t", "gr00t-gr1", "gr00t-g1", "pi", "openvla-oft", "lap", "rldx", "rldx-simpler", "rldx-gr1", "openarm-isaac", "openarm-lift-act"], help="VLA 모델")
+    parser.add_argument("--vla", required=True, choices=["gr00t", "gr00t-gr1", "gr00t-g1", "pi", "openvla-oft", "lap", "rldx", "rldx-simpler", "rldx-gr1", "rldx-kitchen", "openarm-isaac", "openarm-lift-act"], help="VLA 모델")
     parser.add_argument(
         "--config", default=str(BASE_DIR / "simulator-config.yaml"),
         help="공통 설정 파일 경로 (기본: simulator-config.yaml)",
@@ -537,7 +549,7 @@ def main():
         rendered = generate_openvla_oft(config, args.libero_suite, args.dry_run)
     elif args.vla == "lap":
         rendered = generate_lap(config, args.resolved_nlb, args.dry_run)
-    elif args.vla in ("rldx", "rldx-simpler", "rldx-gr1"):
+    elif args.vla in ("rldx", "rldx-simpler", "rldx-gr1", "rldx-kitchen"):
         rendered = generate_rldx(config, args.dry_run, vla=args.vla)
     elif args.vla == "openarm-isaac":
         rendered = generate_openarm_isaac(config, args.dry_run)

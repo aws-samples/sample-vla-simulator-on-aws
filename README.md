@@ -30,6 +30,7 @@ Run Vision-Language-Action (VLA) robot simulation workloads on AWS GPU instances
 | `rldx` | — | RLDX-1 (RLWRLD MSAT / Qwen3-VL-8B, eager)¹ | LIBERO-10 long-horizon | Franka Panda (7-DOF) | `RLDX-Demo` |
 | `rldx-simpler` | — | RLDX-1 (RLWRLD MSAT / Qwen3-VL-8B, eager)¹ ² | SimplerEnv Google-VM (Fractal) | Google Robot (OXE_FRACTAL real-robot embodiment) | `RLDX-Simpler-Demo` |
 | `rldx-gr1` | — | RLDX-1 (RLWRLD MSAT / Qwen3-VL-8B, eager)¹ ³ | RoboCasa GR-1 Tabletop (24-task) | GR-1 humanoid (bimanual + waist) | `RLDX-GR1-Demo` |
+| `rldx-kitchen` | — | RLDX-1 (RLWRLD MSAT / Qwen3-VL-8B, eager)¹ ⁴ | RoboCasa Kitchen (24-task) | PandaOmron (single-arm mobile manipulator) | `RLDX-Kitchen-Demo` |
 | `openarm-lift-act` | — | Scripted state machine (ACT data collection) | Isaac Lab Lift-Cube | OpenArm (unimanual, 7-DOF + gripper) | `OpenArm-Lift-ACT-Demo` |
 
 ¹ RLDX-1 weights are under the **RLWRLD Model License v1.0 (non-commercial)**; "simulation benchmarking" is an explicit intended use. AWS-internal enablement / benchmarking only — not for customer-facing commercial positioning. Weights are downloaded from Hugging Face at runtime (not vendored).
@@ -37,6 +38,8 @@ Run Vision-Language-Action (VLA) robot simulation workloads on AWS GPU instances
 ² `rldx-simpler` is the same RLDX-1 model on SimplerEnv (Google Fractal real-robot embodiment, `OXE_FRACTAL`) instead of LIBERO — the one target here that exercises a real-robot OXE embodiment rather than a simulated Panda/humanoid. Setup clones SimplerEnv + ManiSkill2_real2sim at runtime (MIT). End-to-end validated 2026-06-24 (`g6.2xlarge` L4, full `deploy.py` 1-shot smoke); checkpoint pinned at `@f59c79e1`. See the [showcase](#rldx-simpler--rldx-1-rlwrld-on-simplerenv-google-fractal-real-robot-embodiment) and [Expected Results](#expected-results).
 
 ³ `rldx-gr1` is the same RLDX-1 model family on **RoboCasa GR-1 Tabletop** (RLWRLD's own `RLDX-1-FT-GR1` checkpoint) — the only target here on a **bimanual humanoid with a waist DOF** (GR-1, `GR1ArmsAndWaistFourierHands`), distinct from all single-arm LIBERO/SimplerEnv clips. Renders via MuJoCo/robosuite (no Vulkan); the RoboCasa GR-1 tabletop-tasks suite is cloned at runtime (MIT). End-to-end validated 2026-06-25 (`g5.2xlarge` A10G 24GB, full `deploy.py` 1-shot smoke); checkpoint pinned at `@d0277c5c`. As source-verified, GR-1 needed **no SimplerEnv-style code patch** (dispatch + obs/action routing already correct at the pin) — only the shared dependency-pin fixes. Measured 0.80 (PnPCupToDrawerClose) and 0.20 (PnPMilkToMicrowaveClose) at n=5; reported paper SR = 58.7% (24-task average). See [Expected Results](#expected-results).
+
+⁴ `rldx-kitchen` is the same RLDX-1 model family on the **RoboCasa Kitchen** 24-task benchmark (RLWRLD's own `RLDX-1-FT-ROBOCASA` checkpoint) — a **single-arm mobile manipulator** (`PandaOmron`: a Franka Panda arm on an Omron LD mobile base) doing pick-and-place, doors, drawers and appliances across full kitchen scenes, distinct from the GR-1 humanoid and the LIBERO/SimplerEnv clips. Renders via MuJoCo/robosuite (no Vulkan); the RoboCasa kitchen suite (`squarefk/robocasa`, MIT) is cloned at runtime and its ~5 GB of scene assets download during setup. Source-verified clean like GR-1 (no dispatch/obs/action patch) with **three RoboCasa-Kitchen-specific fixes** found by reading source: (a) the cloned `download_kitchen_assets.py` has no `-y` argparse and prompts via `input()` → made non-interactive so it runs headless; (b) a dependency-pin reconciliation (the kitchen fork pins `numpy 1.23.3`/`numba 0.56.4`, but the import-reachable `albumentations` needs `numpy>=1.24.4`, so the GR-1-proven `numpy 1.26.4`/`numba 0.61.2` stack is protected); (c) the env emits each of the 3 cameras at two resolutions (256 + 512) and the video recorder stacks all of them into a six-panel strip — narrowed to the 256-px policy views so the saved video is a clean three-panel clip (cosmetic; obs/policy/SR untouched). Checkpoint pinned at `@e8279a38`. End-to-end validated 2026-06-26 (`g6.2xlarge` L4 24 GB, full `deploy.py` 1-shot smoke); fixes (a)+(b) confirmed live (the ~5 GB asset download ran headless and the `numpy`/`numba`/`albumentations` stack resolved); fix (c) observed in the Gate-3 output and applied to the committed clips (re-validates live on next deploy). Two articulated tasks at n=5: `OpenSingleDoor` `success_rate = 0.80` (4/5) and `OpenDrawer` `success_rate = 0.80` (4/5); reported paper SR = 70.6% (24-task average). See [Expected Results](#expected-results).
 
 ### Showcase — VLA Rollouts
 
@@ -119,6 +122,24 @@ Same RLDX-1 family as `rldx`/`rldx-simpler`, but on **RoboCasa GR-1 Tabletop** w
 | ![RLDX-1 GR-1 — milk into microwave (failure, timeout)](docs/showcase/rldx-gr1/gr1-milk-microwave-failure.gif) |
 | MP4: [`rldx-gr1/gr1-milk-microwave-failure.mp4`](docs/showcase/rldx-gr1/gr1-milk-microwave-failure.mp4) (clip is 2× speed) |
 | _The dominant outcome on the microwave task: the run hits the 45-step cap (a *timeout*, not a hard error) without satisfying the goal predicate. SR 0.20 here means "rarely solved," not "1-in-5 reliable" — pair the number with the per-episode step counts in `simulation_results.csv`._ |
+
+#### `rldx-kitchen` — RLDX-1 (RLWRLD) on RoboCasa Kitchen (PandaOmron mobile manipulator)
+
+Same RLDX-1 family again, but on the **RoboCasa Kitchen** 24-task benchmark with RLWRLD's own `RLDX-1-FT-ROBOCASA` checkpoint — a **single-arm mobile manipulator** (`PandaOmron`: a Franka Panda arm on an Omron LD mobile base) operating **articulated kitchen fixtures** (cabinet doors, drawers) inside full procedurally-generated kitchen scenes, distinct from the GR-1 humanoid and every LIBERO/SimplerEnv clip. Each clip is a three-camera strip — the two external views (left / right) plus the wrist camera, exactly the views the policy consumes. Served eager via the same ZeroMQ policy server + sim client (two venvs, MuJoCo/robosuite headless EGL — no Vulkan), `g6.2xlarge` L4 24 GB, validated 2026-06-26 via a full `deploy.py` 1-shot smoke. Two articulated tasks at n=5: `OpenSingleDoor` `success_rate = 0.80` (4/5) and `OpenDrawer` `success_rate = 0.80` (4/5) — consistent with the paper's 70.6% 24-task average. Weights are **non-commercial** (RLWRLD Model License v1.0) — sim benchmarking only.
+
+> RoboCasa Kitchen's env emits each of the three cameras at two resolutions (a 256-px policy input + a raw 512-px copy), and the stock video recorder stacks **all** of them — so the unfiltered MP4 is a six-panel strip showing every camera twice. A target-gated runtime fix (FIX 10) narrows the recorder to the 256-px views, giving the clean three-panel video below. The clips here are post-processed to that same three-panel form; FIX 10 makes it the default on the next deploy.
+
+| Success — `OpenSingleDoor` (SR 0.80, 4/5) | Success — `OpenDrawer` (SR 0.80, 4/5) |
+|---|---|
+| ![RLDX-1 Kitchen — open single door (success)](docs/showcase/rldx-kitchen/kitchen-open-single-door-success.gif) | ![RLDX-1 Kitchen — open drawer (success)](docs/showcase/rldx-kitchen/kitchen-open-drawer-success.gif) |
+| MP4: [`rldx-kitchen/kitchen-open-single-door-success.mp4`](docs/showcase/rldx-kitchen/kitchen-open-single-door-success.mp4) | MP4: [`rldx-kitchen/kitchen-open-drawer-success.mp4`](docs/showcase/rldx-kitchen/kitchen-open-drawer-success.mp4) |
+| _Three-camera strip (left / right / wrist); the arm reaches the cabinet handle and swings the door open in 18 env-steps._ | _Distinct mobile-manipulator embodiment — the PandaOmron base + arm pulls the drawer open in 16 env-steps._ |
+
+| Failure — `OpenSingleDoor` (1/5 of this task, step-cap timeout) |
+|---|
+| ![RLDX-1 Kitchen — open single door (failure, timeout)](docs/showcase/rldx-kitchen/kitchen-open-single-door-failure.gif) |
+| MP4: [`rldx-kitchen/kitchen-open-single-door-failure.mp4`](docs/showcase/rldx-kitchen/kitchen-open-single-door-failure.mp4) (clip is 2× speed) |
+| _The one miss on the door task: the run hits the 45-step cap (a *timeout*, not a hard error) without latching the handle. SR 0.80 here means "usually solved" — pair the number with the per-episode step counts in `simulation_results.csv`._ |
 
 #### `gr00t-gr1` — GR00T N1.6 on RoboCasa GR1 humanoid (22-DOF)
 
@@ -287,6 +308,10 @@ python vlasim.py deploy --vla rldx-simpler --email you@example.com
 # NON-COMMERCIAL weights (sim benchmarking) — AWS-internal enablement only.
 python vlasim.py deploy --vla rldx-gr1 --email you@example.com
 
+# RLDX-1 (RLWRLD) — RoboCasa Kitchen 24-task (PandaOmron mobile manipulator, MuJoCo, ~25-35 min)
+# NON-COMMERCIAL weights (sim benchmarking) — AWS-internal enablement only.
+python vlasim.py deploy --vla rldx-kitchen --email you@example.com
+
 # OpenArm Lift-Cube — scripted ACT demo collection in Isaac Lab (HDF5 only; needs a 4-GPU instance)
 python vlasim.py deploy --vla openarm-lift-act --email you@example.com
 ```
@@ -329,6 +354,9 @@ aws logs tail /rldx-simpler/userdata --follow --region us-east-1
 
 # RLDX-1 RoboCasa GR-1 Tabletop logs
 aws logs tail /rldx-gr1/userdata --follow --region us-east-1
+
+# RLDX-1 RoboCasa Kitchen logs
+aws logs tail /rldx-kitchen/userdata --follow --region us-east-1
 ```
 
 ---
@@ -367,6 +395,7 @@ python vlasim.py destroy --vla lap
 python vlasim.py destroy --vla rldx
 python vlasim.py destroy --vla rldx-simpler
 python vlasim.py destroy --vla rldx-gr1
+python vlasim.py destroy --vla rldx-kitchen
 ```
 
 > `vlasim destroy` forwards to `destroy.py` unchanged — `python destroy.py --vla <target>`
@@ -397,6 +426,8 @@ The S3 results bucket is **retained** after stack deletion to preserve simulatio
 | `rldx-simpler` | simpler_env_google/google_robot_move_near (Google-VM Fractal) | 81.5% Google-VM (paper README) | validated 2026-06-24 — 1.0 (5/5 ep, eager, g6.2xlarge L4, full `deploy.py` 1-shot smoke) |
 | `rldx-gr1` | gr1_unified/PnPCupToDrawerClose (GR-1 bimanual + waist) | 58.7% 24-task avg (paper README) | validated 2026-06-25 — 0.80 (4/5 ep, eager, g5.2xlarge A10G 24GB, full `deploy.py` 1-shot smoke) |
 | `rldx-gr1` | gr1_unified/PnPMilkToMicrowaveClose (GR-1 bimanual + waist) | 58.7% 24-task avg (paper README) | validated 2026-06-25 — 0.20 (1/5 ep, eager, g5.2xlarge A10G 24GB, full `deploy.py` 1-shot smoke) |
+| `rldx-kitchen` | robocasa_panda_omron/OpenSingleDoor (PandaOmron mobile manip) | 70.6% 24-task avg (paper README) | 0.80 (4/5), validated 2026-06-26 (g6.2xlarge L4) |
+| `rldx-kitchen` | robocasa_panda_omron/OpenDrawer (PandaOmron mobile manip) | 70.6% 24-task avg (paper README) | 0.80 (4/5), validated 2026-06-26 (g6.2xlarge L4) |
 
 **Validated results (us-east-1, g6.12xlarge / g5.xlarge / g6.xlarge):**
 - GR00T N1.7: KITCHEN_SCENE3 = 1.0 (5/5), KITCHEN_SCENE4 = 1.0 (3/3)
@@ -607,9 +638,10 @@ This sample's own code (CDK, generators, templates) is **MIT-0** (see `LICENSE`)
 | Physical Intelligence openpi (π0.5) | `pi`, `openarm-isaac` | Apache-2.0 | |
 | OpenVLA-OFT | `openvla-oft` | MIT | |
 | LAP-3B | `lap` | MIT (code) | |
-| **RLDX-1 (RLWRLD)** | `rldx`, `rldx-simpler`, `rldx-gr1` | **code Apache-2.0; weights RLWRLD Model License v1.0 (NON-COMMERCIAL)** | "simulation benchmarking" is an explicit intended use. AWS-internal enablement / benchmarking only — not for customer-facing commercial positioning. |
+| **RLDX-1 (RLWRLD)** | `rldx`, `rldx-simpler`, `rldx-gr1`, `rldx-kitchen` | **code Apache-2.0; weights RLWRLD Model License v1.0 (NON-COMMERCIAL)** | "simulation benchmarking" is an explicit intended use. AWS-internal enablement / benchmarking only — not for customer-facing commercial positioning. |
 | LIBERO | LIBERO targets | MIT | |
 | SimplerEnv + ManiSkill2_real2sim | `rldx-simpler` | MIT | cloned at runtime by `setup_SimplerEnv.sh` |
 | RoboCasa GR-1 Tabletop tasks | `rldx-gr1` | MIT | cloned at runtime by `setup_gr1.sh` (`robocasa/robocasa-gr1-tabletop-tasks`) |
+| RoboCasa (Kitchen) + robosuite | `rldx-kitchen` | MIT | cloned at runtime by `setup_robocasa.sh` (`squarefk/robocasa`, fork of ARISE-Initiative/robocasa); ~5 GB scene assets download during setup |
 
-The `rldx`/`rldx-simpler`/`rldx-gr1` targets are built on **RLDX-1 by [RLWRLD](https://github.com/RLWRLD/RLDX-1)** — gratefully acknowledged. RLDX-1's eval harness vendors LIBERO, SimplerEnv, RoboCasa, and GR-1 task suites as submodules (all MIT); this sample clones the RLDX-1 repo at a pinned commit at runtime and applies small in-place runtime fixes (dependency pins, plus — for `rldx-simpler` only — a SimplerEnv dispatch + obs/action adapter patch) to the clone only — the upstream repo is never modified and no model weights are committed here. The `rldx-gr1` target needs no such code patch (its dispatch + obs/action routing are already correct at the pinned commit); only the shared dependency-pin fixes apply.
+The `rldx`/`rldx-simpler`/`rldx-gr1`/`rldx-kitchen` targets are built on **RLDX-1 by [RLWRLD](https://github.com/RLWRLD/RLDX-1)** — gratefully acknowledged. RLDX-1's eval harness vendors LIBERO, SimplerEnv, RoboCasa, and GR-1 task suites as submodules (all MIT); this sample clones the RLDX-1 repo at a pinned commit at runtime and applies small in-place runtime fixes to the clone only — the upstream repo is never modified and no model weights are committed here. Per target: `rldx` needs only the shared dependency-pin fixes; `rldx-simpler` adds a SimplerEnv dispatch + obs/action adapter patch; `rldx-gr1` needs no code patch (dispatch + obs/action routing already correct at the pin); `rldx-kitchen` needs no dispatch/obs/action patch but adds three RoboCasa-Kitchen-specific runtime fixes (making the cloned asset downloader non-interactive for headless setup; a `numpy`/`numba` pin reconciliation so the import-reachable `albumentations` resolves against the kitchen fork; and a cosmetic video-recorder narrowing so the saved clip shows each camera once rather than duplicating it at two resolutions).
