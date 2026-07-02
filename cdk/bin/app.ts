@@ -15,6 +15,7 @@
  *   npx cdk deploy RLDX-Kitchen-Demo  -c region=us-east-1 -c vla=rldx-kitchen
  *   npx cdk deploy OpenArm-Isaac-Demo          -c region=us-east-1 -c vla=openarm-isaac
  *   npx cdk deploy OpenArm-Lift-ACT-Demo       -c region=us-east-1 -c vla=openarm-lift-act
+ *   npx cdk deploy MolmoAct2-Demo              -c region=us-west-2 -c vla=molmoact2
  */
 
 import * as cdk from 'aws-cdk-lib';
@@ -27,9 +28,9 @@ const app = new cdk.App();
 const region = app.node.tryGetContext('region') ?? 'ap-northeast-2';
 const vla: string = app.node.tryGetContext('vla');
 
-if (!vla || !['gr00t', 'gr00t-gr1', 'gr00t-g1', 'pi', 'openvla-oft', 'lap', 'rldx', 'rldx-simpler', 'rldx-gr1', 'rldx-kitchen', 'openarm-isaac', 'openarm-lift-act'].includes(vla)) {
+if (!vla || !['gr00t', 'gr00t-gr1', 'gr00t-g1', 'pi', 'openvla-oft', 'lap', 'rldx', 'rldx-simpler', 'rldx-gr1', 'rldx-kitchen', 'openarm-isaac', 'openarm-lift-act', 'molmoact2'].includes(vla)) {
   throw new Error(
-    'CDK context "vla" is required. Pass -c vla=gr00t, -c vla=gr00t-gr1, -c vla=gr00t-g1, -c vla=pi, -c vla=openvla-oft, -c vla=lap, -c vla=rldx, -c vla=rldx-simpler, -c vla=rldx-gr1, -c vla=rldx-kitchen, -c vla=openarm-isaac, or -c vla=openarm-lift-act.\n' +
+    'CDK context "vla" is required. Pass -c vla=gr00t, -c vla=gr00t-gr1, -c vla=gr00t-g1, -c vla=pi, -c vla=openvla-oft, -c vla=lap, -c vla=rldx, -c vla=rldx-simpler, -c vla=rldx-gr1, -c vla=rldx-kitchen, -c vla=openarm-isaac, -c vla=openarm-lift-act, or -c vla=molmoact2.\n' +
     'Use deploy.py which sets this automatically.',
   );
 }
@@ -62,6 +63,7 @@ const stackNameMap: Record<string, string> = {
   'rldx-kitchen': 'RLDX-Kitchen-Demo',
   'openarm-isaac': 'OpenArm-Isaac-Demo',
   'openarm-lift-act': 'OpenArm-Lift-ACT-Demo',
+  'molmoact2':   'MolmoAct2-Demo',
 };
 const stackName = stackNameMap[vla];
 
@@ -83,6 +85,7 @@ const descriptionMap: Record<string, string> = {
   'rldx-kitchen': 'RLDX-1 (RLWRLD MSAT/Qwen3-VL-8B) + RoboCasa Kitchen 24-task (PandaOmron single-arm mobile manipulator, ZeroMQ policy server + MuJoCo sim client, eager)',
   'openarm-isaac': 'π0.5 (LeRobot pi05 folding_latest, 16-DOF) + Isaac Lab bimanual OpenArm (pipe-proof)',
   'openarm-lift-act': 'OpenArm unimanual Lift-Cube × ACT — scripted teleop-free demo collection (HDF5)',
+  'molmoact2': 'MolmoAct2 (Ai2 5B Action Reasoning Model) + LIBERO (Franka Panda, allenai/lerobot fork, fp32 in-process eval)',
 };
 
 const stack = new VlaSimulatorStack(app, stackName, {

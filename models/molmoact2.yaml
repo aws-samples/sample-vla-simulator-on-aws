@@ -1,0 +1,101 @@
+# MolmoAct2 (Ai2) × LIBERO evaluation configuration
+# Paper:   "MolmoAct2: ..." arXiv:2605.02881 (Ai2, 2026-05)
+# Model:   allenai/MolmoAct2-LIBERO (5B Action Reasoning Model, Apache-2.0, public/non-gated)
+# LeRobot: allenai/lerobot fork @ branch molmoact2-policy (NOT upstream huggingface/lerobot —
+#          MolmoAct2 is not merged upstream, so we install the fork from source via `uv sync`).
+# Goal:    LIBERO evaluation with 1-click deploy on AWS. Single in-process LeRobot inference
+#          (local mode, no policy server) — same shape as openvla-oft / openarm-isaac.
+#
+# CLI:     python deploy.py --vla molmoact2 --email YOU@amazon.com
+#
+# Contract source of truth: .temp/molmoact2/A0-contract.md (fork @ a4f15bf, all path:line cited).
+#
+# ── ⚠️ EVAL DTYPE = fp32 (NOT bf16) ─────────────────────────────────────────────────────────────
+# The fork's OFFICIAL LIBERO eval recipe (docs/source/molmoact2.mdx:302) runs
+#   --policy.model_dtype=float32 --policy.use_amp=false
+# for benchmark determinism. The config DEFAULT and official TRAINING are bf16, but EVAL is fp32.
+# A 5B model in fp32 = ~20 GB weights + activations/KV → peak well over 24 GB.
+#   → MUST run on a SINGLE GPU with >=40 GB VRAM. Only g6e.* (1× L40S 48 GB) qualifies.
+#   → The 4-GPU 12xlarge types (g5/g6) are 4×24 GB; inference uses ONE GPU → 24 GB → OOM. EXCLUDED.
+# (bf16 would fit 24 GB at ~12 GB peak, but is OFF-RECIPE → 97% benchmark not guaranteed. Decision
+#  D1, 2026-06-29: fp32 + g6e for benchmark fidelity / honest demo. Revisit only if g6e capacity fails.)
+
+model:
+  id: molmoact2
+
+  # ── MolmoAct2-LIBERO checkpoint (HF, public, no token) ─────────────────────────────────────────
+  # 5B params, F32 ckpt ~22 GB. LeRobot loads + unnormalizes; norm_tag selects quantile stats.
+  hf_repo: "allenai/MolmoAct2-LIBERO"
+  # git ls-remote https://huggingface.co/allenai/MolmoAct2-LIBERO HEAD  (validated 2026-06-29)
+  hf_model_revision: "0d24a92bd1faf321ef497c3bbd5681af97c65aa2"
+
+  # ── LeRobot FORK (MolmoAct2 policy lives here, not upstream) ───────────────────────────────────
+  # Installed from source: `uv sync --locked --extra molmoact2 --extra libero` at the pinned SHA.
+  # uv.lock present at repo root → reproducible install ([[feedback_match_verified_lock]]).
+  lerobot_repo: "https://github.com/allenai/lerobot.git"
+  lerobot_branch: "molmoact2-policy"
+  # git ls-remote ... refs/heads/molmoact2-policy  (validated 2026-06-29)
+  # ("support molmoact2 async inference" — production branch; -policy-pr-followup is same tip.)
+  lerobot_commit: "a4f15bf347dee7eb8a8c5f4a70a37f476b091113"
+
+  # ── Python interpreter pin (part of the reproducible env, not just uv.lock) ────────────────────
+  # The fork declares requires-python ">=3.12" with NO upper bound, and classifiers list ONLY
+  # 3.12 + 3.13. Unpinned, uv resolves the NEWEST (3.14), whose argparse rejects draccus' use of
+  # `type=str | None` → `TypeError: str | None is not callable` at lerobot-eval CLI parse (RUN_ID
+  # 1814 crash). 3.12 is the primary tested interpreter the uv.lock was resolved against. Pin it.
+  python_version: "3.12"
+
+  # ── Inference contract (A0-verified) ──────────────────────────────────────────────────────────
+  model_dtype: "float32"            # ⚠️ official LIBERO recipe (NOT bf16). use_amp=false below.
+  use_amp: false
+  norm_tag: "libero"                # REQUIRED — omission raises ValueError (processor_molmoact2.py:126).
+  inference_action_mode: "continuous"
+  enable_inference_cuda_graph: true # recipe default (perf; safe on single GPU)
+  # LIBERO raw camera names → LeRobot image keys (must match ckpt image_keys).
+  # Official recipe maps both cams explicitly via --env.camera_name_mapping.
+  camera_name_mapping: '{"agentview_image":"image","robot0_eye_in_hand_image":"wrist_image"}'
+  # LIBERO scene must stabilize before the policy acts — 10 degrades measured success;
+  # the fork's reported numbers all use 50. NOTE: num_steps_wait is NOT a CLI/config field
+  # (envs/configs.py LiberoEnv exposes no such field) — it is hardcoded to the env default 50
+  # (envs/libero.py:127), which IS the recipe value. So we do NOT pass it; this is informational.
+  num_steps_wait: 50
+
+  # ── LIBERO install (separate from the molmoact2 extra; Linux-only `hf-libero` pip pkg) ─────────
+  # No git clone (unlike openvla-oft); installed via `uv sync --extra libero` → hf-libero>=0.1.3.
+
+instance:
+  # fp32 5B → single GPU >=40 GB. g6e.* = 1× L40S 48 GB. xlarge first (cheapest single-L40S),
+  # larger variants as capacity fallbacks (still single GPU, more vCPU/RAM — no multi-GPU trap).
+  # MUST have an explicit INSTANCE_TYPES entry; the gr00t 12xlarge fallback would be wrong (24 GB OOM).
+  # ⚠️ HOST RAM (not just VRAM) is the binding constraint. fp32 5B from_pretrained needs ~20 GB
+  # resident weights + page-cache for the 22 GB safetensors during load. g6e.XLARGE = only 32 GiB
+  # RAM (4 vCPU) → no swap → kernel thrashes re-faulting mmap'd ckpt pages (RUN_ID 1856: GPU stuck
+  # 0% for 24min, majflt 5.7M, VmRSS oscillating, never reached GPU). DROP xlarge.
+  # g6e.2xlarge = 64 GiB RAM / 8 vCPU, same single L40S 48 GB → ample headroom. Lead with it.
+  preferred: [g6e.2xlarge, g6e.4xlarge]
+  # ckpt ~22 GB + uv venv (torch/transformers/peft) + LIBERO assets + rollout videos.
+  ebs_gb: 250
+  # uv sync (fork source build) ~20-30min + ckpt 22 GB download ~10min + fp32 LIBERO eval.
+  # fp32 inference is slower than bf16; libero_goal 50 episodes × 10 tasks. Generous buffer.
+  creationpolicy_timeout: PT240M
+
+# Single suite for the first pipe-proof deploy (single-variable discipline): libero_goal, the
+# fork's documented example. MolmoAct2-LIBERO is ONE checkpoint covering all suites via --env.task,
+# so additional suites are just extra task entries here (no new checkpoint). Bench target ~97%.
+#
+# ⚠️ n_episodes is PER TASK, and lerobot-eval runs ALL tasks in the suite (libero_goal=10 tasks)
+# unless task_ids restricts it. So the official 50/task × 10 tasks = 500 rollouts (fp32 → MANY
+# hours). For the first pipe-proof we cap with task_ids (2 tasks) and n_episodes=5 (=10 rollouts),
+# enough to prove "MolmoAct2 → LIBERO motion + video + success metric" without a 10h bill. Scale to
+# task_ids:[] (all 10) + n_episodes=50 once the pipe is green. Bench (full) target ~97%.
+tasks:
+  - suite: libero_goal              # lerobot-eval --env.task
+    task_ids: [0, 1]                # PIPE-PROOF cap: first 2 of 10 tasks. [] / omit → all 10.
+    n_episodes: 5                   # per task. Full recipe = 50.
+    description: "LIBERO-Goal pipe-proof (MolmoAct2-LIBERO, fp32, continuous, 2 tasks x 5 ep)"
+    paper_success_rate: 0.972       # MolmoAct2 base LIBERO avg (blog/paper); full-suite target
+    seed: 1000
+
+# No bridge mode — local in-process LeRobot inference only (MolmoAct2Policy on the sim GPU).
+bridge:
+  enabled: false

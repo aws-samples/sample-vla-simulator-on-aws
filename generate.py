@@ -19,6 +19,7 @@ generate.py — model yaml + simulator-config.yaml 읽어 assets/userdata/{vla}.
     python generate.py --vla rldx-kitchen [--config simulator-config.yaml] [--dry-run]
     python generate.py --vla openarm-isaac [--config simulator-config.yaml] [--dry-run]
     python generate.py --vla openarm-lift-act [--config simulator-config.yaml] [--dry-run]
+    python generate.py --vla molmoact2   [--config simulator-config.yaml] [--dry-run]
 """
 
 import argparse
@@ -479,6 +480,48 @@ def generate_openarm_lift_act(config: dict, dry_run: bool) -> str:
     return env.get_template("openarm-lift-act-userdata.sh.j2").render(**ctx)
 
 
+def generate_molmoact2(config: dict, dry_run: bool) -> str:
+    """MolmoAct2 (Ai2) × LIBERO eval. Local in-process LeRobot inference (no policy server).
+
+    MolmoAct2 is NOT in upstream LeRobot — installed from the allenai/lerobot FORK at a pinned
+    commit via `uv sync --locked --extra molmoact2 --extra libero`. The template runs the fork's
+    built-in `lerobot-eval --env.type=libero` directly (one process). No embedded python assets.
+    Eval dtype is fp32 (official LIBERO recipe) → requires a single GPU >=40GB (g6e/L40S); the
+    userdata enforces this with a VRAM-floor preflight.
+    """
+    tasks = config.get("tasks", [])
+    if not tasks:
+        print("[error] models/molmoact2.yaml에 tasks 항목이 없습니다.", file=sys.stderr)
+        sys.exit(1)
+
+    tasks_json = _tasks_json_for_bash(tasks)
+    deployment = config.get("deployment", {})
+    model = config.get("model", {})
+
+    ctx = {
+        "tasks_json": tasks_json,
+        "deployment": deployment,
+        "hf_repo": model.get("hf_repo", "allenai/MolmoAct2-LIBERO"),
+        "hf_model_revision": model.get("hf_model_revision", ""),
+        "lerobot_repo": model.get("lerobot_repo", "https://github.com/allenai/lerobot.git"),
+        "lerobot_branch": model.get("lerobot_branch", "molmoact2-policy"),
+        "lerobot_commit": model.get("lerobot_commit", ""),
+        "python_version": model.get("python_version", "3.12"),
+        "model_dtype": model.get("model_dtype", "float32"),
+        "use_amp": bool(model.get("use_amp", False)),
+        "norm_tag": model.get("norm_tag", "libero"),
+        "inference_action_mode": model.get("inference_action_mode", "continuous"),
+        "enable_inference_cuda_graph": bool(model.get("enable_inference_cuda_graph", True)),
+        "camera_name_mapping": model.get(
+            "camera_name_mapping",
+            '{"agentview_image":"image","robot0_eye_in_hand_image":"wrist_image"}',
+        ),
+    }
+
+    env = Environment(loader=FileSystemLoader(str(TEMPLATES_DIR)), keep_trailing_newline=True)  # nosec B701 - shell script template
+    return env.get_template("molmoact2-userdata.sh.j2").render(**ctx)
+
+
 def generate_pi(config: dict, resolved_vpc: str, resolved_nlb: str, dry_run: bool) -> str:
     tasks = config.get("tasks", [])
     if not tasks:
@@ -507,7 +550,7 @@ def generate_pi(config: dict, resolved_vpc: str, resolved_nlb: str, dry_run: boo
 
 def main():
     parser = argparse.ArgumentParser(description="vla-simulator UserData 스크립트 생성")
-    parser.add_argument("--vla", required=True, choices=["gr00t", "gr00t-gr1", "gr00t-g1", "pi", "openvla-oft", "lap", "rldx", "rldx-simpler", "rldx-gr1", "rldx-kitchen", "openarm-isaac", "openarm-lift-act"], help="VLA 모델")
+    parser.add_argument("--vla", required=True, choices=["gr00t", "gr00t-gr1", "gr00t-g1", "pi", "openvla-oft", "lap", "rldx", "rldx-simpler", "rldx-gr1", "rldx-kitchen", "openarm-isaac", "openarm-lift-act", "molmoact2"], help="VLA 모델")
     parser.add_argument(
         "--config", default=str(BASE_DIR / "simulator-config.yaml"),
         help="공통 설정 파일 경로 (기본: simulator-config.yaml)",
@@ -555,6 +598,8 @@ def main():
         rendered = generate_openarm_isaac(config, args.dry_run)
     elif args.vla == "openarm-lift-act":
         rendered = generate_openarm_lift_act(config, args.dry_run)
+    elif args.vla == "molmoact2":
+        rendered = generate_molmoact2(config, args.dry_run)
     else:
         rendered = generate_pi(config, args.resolved_vpc, args.resolved_nlb, args.dry_run)
 

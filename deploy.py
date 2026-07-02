@@ -9,6 +9,7 @@ Usage:
   python deploy.py --vla lap                # LAP-3B + LIBERO-Spatial local mode
   python deploy.py --vla openarm-isaac      # π0.5 (folding_latest) + Isaac Lab bimanual OpenArm local mode
   python deploy.py --vla openarm-lift-act   # OpenArm unimanual Lift-Cube × ACT — scripted demo COLLECTION (HDF5)
+  python deploy.py --vla molmoact2          # MolmoAct2 (Ai2 5B) + LIBERO-Goal — fp32 in-process eval (allenai/lerobot fork)
   python deploy.py --vla gr00t --bridge     # GR00T bridge mode (vla-hub ECS)
   python deploy.py --vla gr00t-gr1 --bridge # GR00T-GR1 bridge mode (vla-hub ECS, if N1.6 supported)
   python deploy.py --vla pi    --bridge     # π0.5  bridge mode (vla-hub ECS)
@@ -164,7 +165,7 @@ def _maybe_import_orphan_bucket(
 def main():
     parser = argparse.ArgumentParser(description="vla-simulator 1-Click Deploy")
     parser.add_argument("--vla", required=True,
-                        choices=["gr00t", "gr00t-gr1", "gr00t-g1", "pi", "openvla-oft", "lap", "rldx", "rldx-simpler", "rldx-gr1", "rldx-kitchen", "openarm-isaac", "openarm-lift-act"],
+                        choices=["gr00t", "gr00t-gr1", "gr00t-g1", "pi", "openvla-oft", "lap", "rldx", "rldx-simpler", "rldx-gr1", "rldx-kitchen", "openarm-isaac", "openarm-lift-act", "molmoact2"],
                         help="VLA model to deploy")
     parser.add_argument("--bridge", action="store_true",
                         help="Bridge mode: use vla-hub ECS endpoint instead of local model")
@@ -214,6 +215,10 @@ def main():
     if args.bridge:
         if args.vla == "openvla-oft":
             print("[error] Bridge mode not supported for openvla-oft (local only).", file=sys.stderr)
+            sys.exit(1)
+        if args.vla == "molmoact2":
+            print("[error] Bridge mode not supported for molmoact2 (local only — MolmoAct2Policy runs in-process via lerobot-eval on the sim GPU).",
+                  file=sys.stderr)
             sys.exit(1)
         if args.vla == "openarm-isaac":
             print("[error] Bridge mode not supported for openarm-isaac (local only — LeRobot pi05 runs in-process on the sim GPU).",
@@ -277,6 +282,8 @@ def main():
         stack_name = "OpenArm-Isaac-Demo"
     elif args.vla == "openarm-lift-act":
         stack_name = "OpenArm-Lift-ACT-Demo"
+    elif args.vla == "molmoact2":
+        stack_name = "MolmoAct2-Demo"
     else:
         stack_name = "Pi-Demo"
     mode = "collect" if args.collect else ("bridge" if args.bridge else "local")
@@ -364,6 +371,8 @@ def main():
             print("  Estimated time: ~120-180 min (docker pull Isaac Lab image ~20-30min + openarm/lerobot install + ckpt DL + sim boot ~10min + single rollout)")
         elif args.vla == "openarm-lift-act":
             print("  Estimated time: ~60-90 min (docker pull Isaac Lab image ~20-30min + openarm install + sim boot ~10min + scripted collection; first run small num_demos)")
+        elif args.vla == "molmoact2":
+            print("  Estimated time: ~60-90 min for the pipe-proof cap (uv sync fork source ~20-30min + MolmoAct2-LIBERO ckpt ~22GB DL ~10min + fp32 LIBERO eval 2 tasks x 5 ep). Full suite (all 10 tasks x 50 ep) is MANY hours in fp32 — scale via models/molmoact2.yaml tasks.")
         else:
             print("  Estimated time: ~90-120 min per suite (install ~30min + eval ~60-90min)")
     print("  If this is your first deploy, confirm the SNS subscription email to receive notifications.")

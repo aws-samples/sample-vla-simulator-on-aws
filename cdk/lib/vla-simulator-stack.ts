@@ -87,6 +87,15 @@ const INSTANCE_TYPES: Record<string, string[]> = {
   // Capacity in us-east-1 → 0-cost rollback (AzSelector probes via run_instances BEFORE launch).
   // Widened with g6e (4× L40S 48 GB — 4-GPU, MORE VRAM than L4, kept LAST so cheaper g5/g6 win first).
   'openarm-lift-act': ['g6.12xlarge', 'g5.12xlarge', 'g6.24xlarge', 'g5.24xlarge', 'g6e.12xlarge', 'g6e.24xlarge'],
+  // MolmoAct2 5B eval runs fp32 (official LIBERO recipe, use_amp=false) → ~20GB weights + acts/KV
+  // peaks well over 24GB. Needs a SINGLE GPU >=40GB → g6e.* (1x L40S 48GB). The 4-GPU 12xlarge
+  // types (g5/g6) are 4x24GB but inference uses ONE GPU → 24GB → OOM, so they are EXCLUDED (the
+  // userdata also enforces a >=40GB VRAM-floor preflight).
+  // ⚠️ HOST RAM is also binding: g6e.xlarge = only 32 GiB RAM → fp32 from_pretrained (~20GB resident
+  // + 22GB safetensors page-cache, no swap) THRASHES, GPU stuck 0%. g6e.2xlarge = 64 GiB RAM (same
+  // L40S) is the floor; the userdata enforces a host-RAM preflight too. xlarge DROPPED.
+  // MUST have an explicit entry: the `?? INSTANCE_TYPES['gr00t']` fallback would pick 12xlarge (24GB OOM).
+  'molmoact2':   ['g6e.2xlarge', 'g6e.4xlarge'],
 };
 
 export class VlaSimulatorStack extends cdk.Stack {
