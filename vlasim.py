@@ -72,6 +72,9 @@ RECOMMENDED_NODE_MAJOR = 20
 # VcpuLimitExceeded failure — exactly what `doctor` exists to catch up front.
 GVR_ONDEMAND_QUOTA_CODE = "L-DB2E81BA"
 
+HF_TOKEN_SSM_NAME = "/vla-simulator/hf-token"
+GATED_MODEL_TARGETS = {"gr00t", "gr00t-g1", "openarm-isaac"}
+
 # vCPU by instance size suffix (covers every size used in models/*.yaml preferred lists).
 _SIZE_VCPU = {
     "xlarge": 4, "2xlarge": 8, "4xlarge": 16, "8xlarge": 32,
@@ -321,6 +324,10 @@ def run_doctor(vla=None, region=None, email=None, quiet_header=False):
     if account:
         _check_gpu_quota(d, boto3, ClientError, BotoCoreError, region, vla)
 
+    # 14. HF token in SSM (for gated-model targets) -------------------------
+    if account and vla and vla in GATED_MODEL_TARGETS:
+        _check_hf_token(d, boto3, ClientError, BotoCoreError, region, vla)
+
     return _summary(d, vla)
 
 
@@ -363,6 +370,23 @@ def _check_gpu_quota(d, boto3, ClientError, BotoCoreError, region, vla):
                "verify manually in the Service Quotas console (EC2)")
     except BotoCoreError as e:
         d.warn(f"could not read G/VR vCPU quota ({type(e).__name__})")
+
+
+def _check_hf_token(d, boto3, ClientError, BotoCoreError, region, vla):
+    """Verify the HF token SSM parameter exists for targets that need gated models."""
+    try:
+        ssm = boto3.client("ssm", region_name=region)
+        ssm.get_parameter(Name=HF_TOKEN_SSM_NAME)
+        d.ok(f"HF token present in SSM ({HF_TOKEN_SSM_NAME})")
+    except ClientError as e:
+        code = e.response.get("Error", {}).get("Code", "")
+        if code == "ParameterNotFound":
+            d.warn(f"HF token not found in SSM — {vla} requires it for gated model download",
+                   "run: python vlasim.py init --hf-token YOUR_HF_TOKEN")
+        else:
+            d.skip(f"HF token check", f"SSM access error ({code})")
+    except BotoCoreError as e:
+        d.skip(f"HF token check", f"{type(e).__name__}")
 
 
 def _summary(d, vla):
@@ -459,6 +483,56 @@ def _cdk_bootstrap(region):
     return res.returncode
 
 
+def _store_hf_token(token, region):
+    """Store a HuggingFace token in SSM Parameter Store as a SecureString."""
+    try:
+        import boto3  # noqa: PLC0415
+        ssm = boto3.client("ssm", region_name=region)
+        ssm.put_parameter(
+            Name=HF_TOKEN_SSM_NAME,
+            Value=token,
+            Type="SecureString",
+            Overwrite=True,
+        )
+        print(f"[init] HF token stored in SSM ({HF_TOKEN_SSM_NAME}, encrypted)")
+    except Exception as e:  # noqa: BLE001
+        print(f"[init] Failed to store HF token in SSM: {type(e).__name__}: {e}",
+              file=sys.stderr)
+        print(f"       You can store it manually:\n"
+              f"       aws ssm put-parameter --name {HF_TOKEN_SSM_NAME} "
+              f"--value YOUR_TOKEN --type SecureString --overwrite",
+              file=sys.stderr)
+
+
+def _hf_token_exists(region):
+    """Check if the HF token SSM parameter already exists. Returns bool."""
+    try:
+        import boto3  # noqa: PLC0415
+        ssm = boto3.client("ssm", region_name=region)
+        ssm.get_parameter(Name=HF_TOKEN_SSM_NAME)
+        return True
+    except Exception:  # nosec B110
+        return False
+
+
+def _handle_hf_token(token, region):
+    """Store HF token if provided, or prompt interactively if missing."""
+    if token:
+        _store_hf_token(token, region)
+        return
+
+    if not region or not sys.stdin.isatty():
+        return
+
+    if _hf_token_exists(region):
+        print("[init] HF token already in SSM (use --hf-token to overwrite)")
+        return
+
+    entered = input("[init] HuggingFace token (for gr00t/openarm, or Enter to skip): ").strip()
+    if entered:
+        _store_hf_token(entered, region)
+
+
 def run_init(rest):
     p = argparse.ArgumentParser(prog="vlasim init", add_help=True,
                                 description="One-time setup: install deps + fill config.")
@@ -466,6 +540,8 @@ def run_init(rest):
                    help="Notification email to write into simulator-config.yaml")
     p.add_argument("--region", "-r", metavar="REGION",
                    help="AWS region to write into simulator-config.yaml")
+    p.add_argument("--hf-token", metavar="TOKEN",
+                   help="HuggingFace token for gated models (stored encrypted in SSM Parameter Store)")
     p.add_argument("--bootstrap", action="store_true",
                    help="Also run `cdk bootstrap` for the target account/region")
     p.add_argument("--skip-install", action="store_true",
@@ -498,6 +574,11 @@ def run_init(rest):
     # 3. Config
     print("\n[3/3] Configuring simulator-config.yaml")
     _fill_config(email=args.email, region=args.region)
+
+    # 4. HF token (optional — needed for gr00t, gr00t-g1, openarm-isaac)
+    region_for_ssm, _ = _read_config()
+    region_for_ssm = args.region or region_for_ssm
+    _handle_hf_token(args.hf_token, region_for_ssm)
 
     # Optional bootstrap
     if args.bootstrap:
